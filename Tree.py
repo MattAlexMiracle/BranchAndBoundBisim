@@ -40,33 +40,27 @@ class BinaryNetworkTree:
     device : str = "cpu"
     sum_cache : torch.Tensor | None = None
 
-    def get_embeddable(self) -> Tuple[torch.Tensor, List[int]]:
-        if self.embedded:
-            return torch.tensor([]).to(self.device), []
-        lE = None
-        rE = None
-        if self.leftNode is None or self.leftNode.embedded:
-            lE = self.leftNode.combinedEmbeddings if self.leftNode is not None else torch.zeros_like(
-                self.embeddedFeatures)
-        if self.rightNode is None or self.rightNode.embedded:
-            rE = self.rightNode.combinedEmbeddings if self.rightNode is not None else torch.zeros_like(
-                self.embeddedFeatures)
-        if lE is not None and rE is not None:
-            # we should get here, iff either both children have embeddings, or are nonexistent
-            feat = torch.cat([lE.to(self.device), rE.to(self.device), self.embeddedFeatures.to(self.device)])
-            return feat.unsqueeze(0), [self.uid]
-
-        ls = []
-        lsF = []
+    def get_embeddable(self) -> Tuple[List[torch.Tensor], List[torch.Tensor], List[int]]:
+        lE = self.leftNode.combinedEmbeddings if self.leftNode is not None else torch.zeros_like(
+            self.embeddedFeatures)
+        rE = self.rightNode.combinedEmbeddings if self.rightNode is not None else torch.zeros_like(
+            self.embeddedFeatures)
+        # we should get here, iff either both children have embeddings, or are nonexistent
+        feat = torch.cat([lE.to(self.device), rE.to(self.device)])
+        ls = [self.uid]
+        raw_feats = [self.features.to(self.device).unsqueeze(0)]
+        lsF = [feat.unsqueeze(0)]
         if self.leftNode is not None:
-            left_feat, left_uid = self.leftNode.get_embeddable()
-            lsF.append(left_feat.to(self.device))
+            left_feat, raw_f, left_uid = self.leftNode.get_embeddable()
+            lsF.extend(left_feat)
             ls.extend(left_uid)
+            raw_feats.extend(raw_f)
         if self.rightNode is not None:
-            right_feat, right_uid = self.rightNode.get_embeddable()
-            lsF.append(right_feat.to(self.device))
+            right_feat, raw_f, right_uid = self.rightNode.get_embeddable()
+            lsF.extend(right_feat)
             ls.extend(right_uid)
-        return torch.cat(lsF), ls
+            raw_feats.extend(raw_f)
+        return lsF, raw_feats, ls
 
     def assign_embeddings(self, embeddings: torch.Tensor, uids: List[int], indices:List[int], type: FeatureType) -> None:
         if len(uids) == 0:
@@ -162,7 +156,7 @@ class BinaryNetworkTree:
             return [], self.log_p[1]
     
     def prepare_logprob(self) -> None:
-        l,r, lsz, rsz = torch.ones(1,device=self.device),torch.ones(1,device=self.device), 1,1
+        l,r, lsz, rsz = None,None, 1,1
         if self.leftNode is not None:
             l = self.leftNode.sum_logprob()
             lsz = self.leftNode.size()+1
@@ -171,6 +165,13 @@ class BinaryNetworkTree:
             r = self.rightNode.sum_logprob()
             rsz = self.rightNode.size()+1
             self.rightNode.prepare_logprob()
+        if l is None and r is None:
+            l = self.weight
+            r = self.weight
+        if l is None:
+            l = torch.ones(1,device=self.device)
+        if r is None:
+            r = torch.ones(1,device=self.device)
         self.log_p = torch.log_softmax(torch.cat([l/lsz,r/rsz]),-1)
         
     def sum_logprob(self) -> torch.Tensor:
@@ -229,14 +230,16 @@ class TreeBatch:
         for uid,ind,tree in zip(uids,indices,self.trees):
             tree.assign_embeddings(embeddings, uid,ind, type)
 
-    def get_embeddable(self) -> Tuple[torch.Tensor, List[List[int]]]:
+    def get_embeddable(self) -> Tuple[torch.Tensor,torch.Tensor, List[List[int]]]:
         embs = []
         ids = []
+        raw_feats = []
         for tree in self.trees:
-            e, id = tree.get_embeddable()
-            embs.append(e)
+            e, r, id = tree.get_embeddable()
+            embs.extend(e)
             ids.append(id)
-        return torch.cat(embs), ids
+            raw_feats.extend(r)
+        return torch.cat(embs), torch.cat(raw_feats), ids
 
     def batch_action(self, action: List[List[str]]) -> torch.Tensor:
         probs = torch.zeros(len(self.trees))
@@ -251,24 +254,23 @@ class TreeBatch:
         for tree in self.trees:
             tree.traverse(fun)
     
-    def embeddings(self, featEmb : nn.Module, combineEmb:nn.Module) -> None:
+    def embeddings(self, combineEmb:nn.Module) -> None:
         # make sure to reset all buffers before doing this:
         self.reset_caches()
-        feat,uids = self.get_flat(type=FeatureType.Feature)
+        #feat,uids = self.get_flat(type=FeatureType.Feature)
         #print("embedding features" )
-        embs = featEmb(feat.to(self.device))
         #print("assigning feature embed",time()-t0)
-        self.assign_embeddings(embs,uids, FeatureType.embeddedFeature)
+        #self.assign_embeddings(embs,uids, FeatureType.embeddedFeature)
         #print("done",time()-t0)
         #print("got feature embeddings", time()-t0)
-        emb,uids = self.get_embeddable()
-        while emb.shape[0] !=0:
+        for _ in range(2):
             #print("emb shape", emb.shape)
-            comb,w = combineEmb(emb)
+            emb, raw_feats,uids = self.get_embeddable()
+            comb,w = combineEmb(emb, raw_feats)
             #print("combining emb")
             self.assign_embeddings(comb, uids.copy(), FeatureType.combinedEmbedding,)
             self.assign_embeddings(w,uids.copy(), FeatureType.weight,)
-            emb,uids = self.get_embeddable()
+            # emb,raw_feats,uids = self.get_embeddable()
             #print("got level", time()-t0)
         self.prepare_logprob()
 
@@ -301,8 +303,8 @@ def __make_random_tree(tree_chance=0.2,maxdepth=16,device="cpu") -> BinaryNetwor
                                rightNode=__make_random_tree(tree_chance,maxdepth-1,device),
                                features=torch.ones(128,device=device)*maxdepth,
                                info=dict(),
-                               embeddedFeatures=torch.zeros(1024,device=device),
-                               combinedEmbeddings=torch.zeros(1024,device=device),
+                               embeddedFeatures=torch.zeros(256,device=device),
+                               combinedEmbeddings=torch.zeros(256,device=device),
                                log_p=torch.zeros(2,device=device),
                                uid=0,
                                tree_id=0,
@@ -314,8 +316,8 @@ def __make_random_tree(tree_chance=0.2,maxdepth=16,device="cpu") -> BinaryNetwor
                              rightNode=None,
                              features=torch.ones(128,device=device)*maxdepth,
                              info=dict(),
-                             embeddedFeatures=torch.zeros(1024,device=device),
-                             combinedEmbeddings=torch.zeros(1024,device=device),
+                             embeddedFeatures=torch.zeros(256,device=device),
+                             combinedEmbeddings=torch.zeros(256,device=device),
                              log_p=torch.zeros(2,device=device),
                              uid=0,
                              tree_id=0,
@@ -324,6 +326,7 @@ def __make_random_tree(tree_chance=0.2,maxdepth=16,device="cpu") -> BinaryNetwor
                              )
 
 if __name__ == '__main__':
+    torch.set_float32_matmul_precision('high')
     device = 'cuda'
     trees = []
     for _ in range(64):
@@ -344,14 +347,15 @@ if __name__ == '__main__':
     
     # now run some test with NNs:
     from modules import FeatureEmbedder, CombineEmbedder, NaiveCombineEmbedder
-    featureEmbedder = FeatureEmbedder(128,1024)
-    featureEmbedder.to(device)
+    #featureEmbedder = FeatureEmbedder(128,1024)
+    #featureEmbedder.to(device)
     #combineEmbedder = NaiveCombineEmbedder(1024,0.99)
-    combineEmbedder = torch.jit.script(CombineEmbedder(1024,1024,0.95))
+    combineEmbedder = CombineEmbedder(256,0.25)
     print(combineEmbedder.forward)
     combineEmbedder.to(device)
+    combineEmbedder = torch.compile(combineEmbedder)
     
-    optim = torch.optim.Adam(list(featureEmbedder.parameters())+list(combineEmbedder.parameters()),3e-4)
+    optim = torch.optim.Adam(combineEmbedder.parameters(),3e-4)
     # 1. embedd all features:
     #trees.embeddings(featureEmbedder,combineEmbedder)
     #print([x.log_p for x in trees])
@@ -361,12 +365,12 @@ if __name__ == '__main__':
     print("tree sizes", tsz)
     print("expected size of trees", torch.mean(torch.tensor(tsz).float()))
     reward = []
-    for t in trange(40):
-        trees.embeddings(featureEmbedder,combineEmbedder)
+    for t in trange(100):
+        print("start embed and sample")
         t0=time()
-        #print("start sample")
+        trees.embeddings(combineEmbedder)
         paths, log_ps = trees.sample_batch()
-        #print("end sample",time()-t0)
+        print("end embed and sample",time()-t0)
         #print(f"round {t}: paths",paths)
         #print(f"round {t}: log p", log_ps)
         # this is our "reward"

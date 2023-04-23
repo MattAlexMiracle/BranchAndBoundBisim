@@ -15,29 +15,28 @@ class FeatureEmbedder(nn.Module):
 
 
 class CombineEmbedder(nn.Module):
-    def __init__(self, feature_emb_in: int, node_emb_sz: int,early_stop:float):
+    def __init__(self, node_emb_sz: int,early_stop:float):
         super().__init__()
-        self.feature_emb_in = feature_emb_in
         self.node_emb_sz = node_emb_sz
-        self.embd = nn.Sequential(nn.Linear(feature_emb_in+2*node_emb_sz, node_emb_sz),
-                                  nn.LeakyReLU(),
-                                  nn.BatchNorm1d(node_emb_sz)
-                                  )
+        #self.embd = nn.Sequential(nn.Linear(feature_emb_in+2*node_emb_sz, node_emb_sz),
+        #                          nn.LeakyReLU(),
+        #                          nn.BatchNorm1d(node_emb_sz)
+        #                          )
+        self.node_emb = nn.Linear(node_emb_sz*2,node_emb_sz)
+        self.feat_emb = FeatureEmbedder(128,node_emb_sz)
         self.weight = nn.Linear(node_emb_sz, 1)
         self.early_stop = early_stop
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor, raw_feats : torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         # linear layer with pseudo-skip connection
-        nodeL, nodeR, feat = torch.chunk(x, 3, -1)
-        if torch.rand(1)< self.early_stop:
-            feat=feat.detach()
-        nodeL = nodeL.detach()
-        nodeR = nodeR.detach()
-            #featT = feat.detach()
-            # x = x.detach()
-        x = torch.cat([feat.detach(), nodeL, nodeR],-1)
-
-        x = (self.embd(x) + nodeL + nodeR+feat)/4
+        #nodeL, nodeR = torch.chunk(x.detach(), 2, -1)
+        #nodeL = nodeL.detach()
+        #nodeR = nodeR.detach()
+        #featT = feat.detach()
+        # x = x.detach()
+        #x = torch.cat([feat, nodeL, nodeR],-1)
+        x = F.leaky_relu(self.feat_emb(raw_feats) + self.node_emb(x))/3
+        #x = (self.embd(x) + nodeL + nodeR+feat)/4
         w = self.weight(x)
         return x, w
 
