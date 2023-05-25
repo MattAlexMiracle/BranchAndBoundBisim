@@ -1,0 +1,4 @@
+outputs/
+wandb/
+__pycache__/
+model-*.cip
