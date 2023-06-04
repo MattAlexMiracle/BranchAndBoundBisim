@@ -36,7 +36,7 @@ class FeatureEmbedder(nn.Module):
             nn.Linear(feature_in, feature_embed_out),
             nn.LeakyReLU(),
             #nn.Linear(feature_embed_out, feature_embed_out),
-            #nn.BatchNorm1d(feature_embed_out),
+            nn.BatchNorm1d(feature_embed_out),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

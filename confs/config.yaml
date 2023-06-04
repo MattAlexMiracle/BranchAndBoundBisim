@@ -6,7 +6,7 @@ device: "cpu"
 optimization:
   lr: 3e-4
   batchsize: 64
-  gae: 0.9
+  gae: 0.95
 
 env:
   num_steps: 50

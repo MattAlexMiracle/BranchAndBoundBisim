@@ -197,6 +197,12 @@ def main(cfg: DictConfig):
     NN = CombineEmbedder(12+10, 512)
     NN.to(device)
     optim = torch.optim.AdamW(NN.parameters(), cfg.optimization.lr)
+    print(f"""
+          =============================================================
+          Num trainable parameters 
+          {sum(p.numel() for p in NN.parameters() if p.requires_grad)}
+          ==============================================================
+          """)
     train(cfg,NN, optim)
 
 if __name__ == "__main__":
