@@ -25,6 +25,8 @@ def sample_open_nodes(nodes,logits :Dict[int,torch.Tensor]):
 def powernorm(val : np.ndarray, power : float):
     return np.sign(val) * (abs(val)**power)
 
+def signed_log(val : np.ndarray):
+    return np.sign(val) * (np.log(abs(val)+1e-3))
 
 
 class CustomNodeSelector(Nodesel):
@@ -47,42 +49,45 @@ class CustomNodeSelector(Nodesel):
         self.added_ids.add(node.getNumber())
         power=0.5
         #age = powernorm(torch.tensor(self.model.getNNodes()),power)
-        primalbound = powernorm(self.model.getPrimalbound(),power).clip(-10,10)
+        primalbound = signed_log(self.model.getPrimalbound()).clip(-10,10)
         NcutsApp = powernorm(self.model.getNCutsApplied(),power)
         Nsepa = powernorm(self.model.getNSepaRounds(),power)
-        dualbound = powernorm(node.getLowerbound(),power).clip(-10,10)
-        local_estimate = powernorm(self.model.getLocalEstimate(), power).clip(-10,10)
-        val = powernorm(self.model.getSolObjVal(None),power).clip(-10,10)
-        gap = np.clip(self.model.getGap()*10,-10,10)
+        dualbound = signed_log(node.getLowerbound()).clip(-10,10)
+        local_estimate = signed_log(self.model.getLocalEstimate()).clip(-10,10)
+        val = signed_log(self.model.getSolObjVal(None)).clip(-10,10)
+        gap = np.clip(self.model.getGap(),-10,10)
         # node properties
         depth = powernorm(node.getDepth()/(self.model.getNNodes()+1),power)
         #estimate = powernorm(torch.tensor(node.getEstimate()),power).clamp(-100,100)
-        p = 0
+        p = []
         n=0
         vs = self.model.getVars()
         for v in vs:
             if v.vtype() in ["BINARY", "INTEGER", "IMPLINT"]:
                n+=1
                sol = v.getLPSol()
-               p += abs(sol  - np.floor(sol))
-        p = 10*p/n
-        # is this usefu? A vertex is always going to have an equality set with a known size...
-        actives =0
-        n=0
-        for c in self.model.getConss():
-            n+=1
-            if c.isActive():
-                actives+=1
-        actives = actives / n
+               p += [abs(sol  - np.floor(sol))]
+        p = np.array(p).reshape(-1)
+        frac_mean = 10*np.mean(p)
+        frac_std = 10*np.std(p)
+        frac_max = 10*np.max(p)
+        frac_min = 10*np.min(np.concatenate([p[p!=0],np.array([1.0])]))
+        hist = np.histogram(np.concatenate([p[p!=0],np.array([1.0])]),10,range=(0,1.0), density=True)[0]
+        # you have to be careful with using isclose for values close to zero
+        # because atol can give false positives. In this case we accept this here
+        already_integral = np.isclose(np.array(p),0).mean()
+
         constraints_added = powernorm(node.getNAddedConss(),power)
         nbranch, nconsprop, nprop = node.getNDomchg()
         domchange_branch = powernorm(nbranch,power)
         domchange_consprop = powernorm(nconsprop,power)
         domchange_prop = powernorm(nprop,power)
-        cond = powernorm(min(self.model.getCondition(),100),power)
+        cond = np.log10(self.model.getCondition()).clip(0,10)
 
         tmp =  node.getDomchg()
-        expDomch = powernorm(np.array([x.getNewBound() for x in tmp.getBoundchgs()] if tmp is not None else 0.0).astype(float).mean(),power)
+        dmch = np.array([x.getNewBound() for x in tmp.getBoundchgs()] if tmp is not None else 0.0).astype(float)
+        expDomch = powernorm(dmch.mean(),power)
+        stdDomch = powernorm(dmch.std(),power)
         lpi = powernorm(self.model.lpiGetIterations(),power)
 
         info = {
@@ -90,22 +95,28 @@ class CustomNodeSelector(Nodesel):
                     "Nsepa":Nsepa,
                     "gap": gap,
                     "lpi": lpi,
-                    "dual": dualbound,
-                    "best_local_sol": local_estimate,
-                    "val":val,
+                    #"dual": dualbound,
+                    #"best_local_sol": local_estimate,
+                    #"val":val,
                     "depth_normed":depth,
                     #"constraints_added" : constraints_added,
                     #"domchange_branch":domchange_branch,
                     #"domchange_consprop":domchange_consprop,
                     #"domchange_prop": domchange_prop,
                     "expDomch" : expDomch,
+                    #"stdDomch":stdDomch,
                     "cond": cond,
-                    "primalbound":primalbound,
+                    #"primalbound":primalbound,
                     # "active ratio" : actives,
-                    "mae on integral": p
+                    "mean to integral": frac_mean,
+                    "std to integral": frac_std,
+                    "max to integral": frac_max,
+                    "min to integral": frac_min,
+                    "already_integral": already_integral
                 }
-        features = torch.from_numpy(np.array(list(info.values()))).detach().half()
-        # print(info)
+        print(info,hist)
+        
+        features = torch.from_numpy(np.array(list(info.values())+ hist.tolist())).detach().half()
         new_node = BinaryNetworkTree(leftNode=None,
                 rightNode=None,
                 features=features,#torch.ones(128),

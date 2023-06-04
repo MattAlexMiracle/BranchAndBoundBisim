@@ -133,6 +133,9 @@ class BinaryNetworkTree:
 
         l = {k:v + self.log_p[0] for k,v in l.items()} # type: ignore
         r = {k:v + self.log_p[1] for k,v in r.items()} # type: ignore
+
+        lv = {k:v + self.value for k,v in lv.items()} # type: ignore
+        rv = {k:v + self.value for k,v in rv.items()} # type: ignore
         dct.update(r)
         dct.update(l)
         dct_v.update(lv)
@@ -320,7 +323,7 @@ class TreeBatch:
         #print("NN time",time()-t)
         #self.assign_embeddings(comb, uids.copy(), FeatureType.combinedEmbedding,)
         #t = time()
-        self.assign_embeddings(w,values,uids.copy(), )
+        self.assign_embeddings(w,values,uids.copy())
         #print("assign time",time()-t)
         self.prepare_logprob(temperature,legal_ids)
 

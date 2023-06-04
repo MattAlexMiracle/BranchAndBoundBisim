@@ -106,12 +106,15 @@ def train_ppo(NN: nn.Module, optimizer: torch.optim.Optimizer, batch: TreeBatch,
 
     entropy_loss = entropy.mean()
     loss = pg_loss - conf.ent_coef * entropy_loss + v_loss * conf.vf_coef
-    wandb.log({"train loss": loss.detach().item(), "entropy loss": entropy_loss.detach().item(), "v_loss": v_loss.detach().item(),
+    wandb.log({"train loss": loss.detach().item(), "entropy": entropy_loss.detach().item(), "v_loss": v_loss.detach().item(),
               "mean_logprob": logprob.mean().detach().item(), "std_logprob": logprob.std().detach().item(),
                "approx_kl": approx_kl.detach().item(),
-               "old_approx_kl": old_approx_kl.detach().item()
+               "old_approx_kl": old_approx_kl.detach().item(),
+               "pg_loss" : pg_loss.detach().item(),
+               "mean ratio": ratio.mean().detach().item()
                })
-    if approx_kl > 10:
+    if approx_kl > 100:
+        print("emergency skip due to large kl-div")
         optimizer.zero_grad()
         return loss.detach().item()
     optimizer.zero_grad()

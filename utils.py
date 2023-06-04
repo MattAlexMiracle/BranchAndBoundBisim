@@ -52,7 +52,7 @@ def get_data(nodesel, model, baseline_gap=None, baseline_nodes=None):
         n_nodes = n/(baseline_nodes + 1e-8) -1
         gap = 1*gap + (1-1)*n_nodes
     
-    rewards[-1] = rewards[-1] - min(gap,10)
+    rewards[-1] = 10*(rewards[-1] - min(gap,10))
     returns = get_returns(rewards,0.99)
     selecteds = nodesel.paths
     return open_nodes, returns, nodes, rewards, selecteds
@@ -61,7 +61,10 @@ def get_data(nodesel, model, baseline_gap=None, baseline_nodes=None):
 def powernorm(val : torch.Tensor, power : float):
     return val.sign() * (val.abs()**power)
 
-
+def chunks(lst, n):
+    """Yield successive n-sized chunks from lst."""
+    for i in range(0, len(lst), n):
+        yield lst[i:i + n]
 
 
 def plotting(train_rewards, eval_rewards):

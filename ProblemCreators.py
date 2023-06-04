@@ -5,6 +5,7 @@ import numpy as np
 import pyscipopt as scip
 from scipy.spatial.distance import cdist
 from utils import powernorm
+from tsp_mutator import do_mutation
 
 def generate_test_data(seed):
     g_cpu = torch.Generator()
@@ -26,6 +27,9 @@ def generate_test_data(seed):
     model.writeProblem(f"model-{seed}.cip")
     return f"model-{seed}.cip"
 
+
+
+
 def make_tsp(seed=None):
     """
     USE MTZ formulation
@@ -34,11 +38,11 @@ def make_tsp(seed=None):
     #if seed is not None:
     #    g_cpu.manual_seed(seed)
     # Define a distance matrix for the cities
-    size = 75
-    d = powernorm(torch.randn(size,2,)*50,0.5).numpy()
+    size = 90
+    d = do_mutation(powernorm(torch.randn(size,2,)*size,0.5).numpy())
     y = np.random.rand(size,size)
     random_offset = y-np.diag(y)*np.eye(len(y))
-    dist_matrix = cdist(d,d)+random_offset*2
+    dist_matrix = cdist(d,d)#+random_offset*2
     #print("TSP size",size)
     # Create a SCIP model
     model = Model("TSP")

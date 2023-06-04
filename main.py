@@ -44,8 +44,7 @@ def launch_models(pool,NN: nn.Module, temperature: float, num_proc: int, model_m
     open_nodes, returns, nodes, rewards, selecteds = [], [], [], [], [],
     mask = []
     for res in result:
-        # x = res.get()
-        op, ret, no, r, select = deepcopy(res)
+        op, ret, no, r, select = res
         open_nodes.extend(op)
         returns.append(ret)
         nodes.extend([from_dict(n) for n in no])
@@ -82,7 +81,7 @@ def __make_and_optimize(it, seed, NN, f):
 
     model.includeNodesel(nodesel, "custom test",
                          "just a test", 1000000, 100000000)
-    model.setRealParam("limits/time", 30)
+    model.setRealParam("limits/time", 45)
     model.hideOutput()
     model.optimize()
     #print("done snd")
@@ -155,7 +154,7 @@ def fit(cfg, NN,optim, open_nodes, returns, nodes, rewards, selecteds, mask):
 
 def train(cfg: DictConfig, NN, optim):
     #torch.multiprocessing.set_start_method("spawn")
-    pool = Pool(12)
+    pool = Pool(16)
     #total_rewards = []
     #eval_rewards = []
     funs=[make_tsp, ]
@@ -178,7 +177,7 @@ def train(cfg: DictConfig, NN, optim):
             NN_ref = ray.put(NN)
             result = pool.starmap(__make_and_optimize,[(0,0,NN_ref,t) for t in test_data])
             for d in result:
-                _, _, _, r, _  = deepcopy(d)
+                _, _, _, r, _  = d
                 tmp.append(torch.tensor(r).sum().item())
             wandb.log({"eval reward mean": torch.tensor(tmp).mean(),"eval reward std": torch.tensor(tmp).std()})
     tmp = []
@@ -195,7 +194,7 @@ def main(cfg: DictConfig):
     #ray.init(num_cpus=12)
     wandb.init(project="BnBBisim", config=OmegaConf.to_container(cfg))
     device = cfg.device
-    NN = CombineEmbedder(12, 512)
+    NN = CombineEmbedder(12+10, 512)
     NN.to(device)
     optim = torch.optim.AdamW(NN.parameters(), cfg.optimization.lr)
     train(cfg,NN, optim)

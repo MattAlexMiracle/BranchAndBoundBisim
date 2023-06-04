@@ -1,7 +1,7 @@
 name: "PPO"
 update_epochs: 32
 norm_adv: True
-clip_coef: 0.2
+clip_coef: 0.1
 clip_vloss: True
 ent_coef: 0.01
 vf_coef: 0.5
