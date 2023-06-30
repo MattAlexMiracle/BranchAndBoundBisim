@@ -4,13 +4,15 @@ if __name__ == '__main__':
 from ProblemCreators import subset_sum, make_tsp, create_knapsack_instance, capacitated_facility_location, cutting_stock
 import torch
 from Tree import BinaryNetworkTree, TreeBatch, to_dict, from_dict
-from utils import get_data
+from utils import get_data, plot_tree
 from SelectTree import CustomNodeSelector
 from pyscipopt import Model
 from torch import nn
 from copy import deepcopy
 from modules import CombineEmbedder
+import time
 from ray.util.multiprocessing import Pool
+#from torch.multiprocessing import Pool
 import ray
 from typing import List, Callable, Tuple
 import numpy as np
@@ -20,9 +22,10 @@ import hydra
 from tqdm import trange
 from omegaconf import DictConfig, OmegaConf
 import wandb
-import gc
+import os
+import pandas as pd
 
-def launch_models(pool,NN: nn.Module, temperature: float, num_proc: int, model_makers: List[Callable]) -> Tuple[List[List[int]],
+def launch_models(pool,NN: nn.Module, csv_info : pd.DataFrame, num_proc: int, model_makers: List[Callable]) -> Tuple[List[List[int]],
                                                                                                            torch.Tensor,
                                                                                                            List[BinaryNetworkTree],
                                                                                                            List[float],
@@ -30,21 +33,25 @@ def launch_models(pool,NN: nn.Module, temperature: float, num_proc: int, model_m
                                                                                                            torch.Tensor]:
     g = torch.Generator()
     arg_list = []
-    NN_ref = ray.put(NN)
-    for it in range(num_proc//2):
+    # NN_ref = ray.put(NN)
+    for it in range(num_proc):
         seed = g.seed()
-        i = torch.randint(0, len(model_makers), (1,))           
-        arg_list.append((it,seed, NN_ref, f"cache/model-{it}.cip"))
-    for it in range(num_proc//2):
-        seed = g.seed()
-        i = torch.randint(0, len(model_makers), (1,))
-        f = model_makers[i]
-        arg_list.append((it,seed, NN_ref, f))
+        i = int(torch.randint(0, len(csv_info), (1,)))
+        datum = csv_info.loc[i]
+        arg_list.append((it,seed, NN, datum["name"],datum["gap"],datum["open_nodes"]))
+    #for it in range(num_proc//2):
+    #    seed = g.seed()
+    #    i = torch.randint(0, len(model_makers), (1,))
+    #    f = model_makers[i]
+    #    arg_list.append((it,seed, NN_ref, f))
     result = pool.starmap(__make_and_optimize,arg_list)
     open_nodes, returns, nodes, rewards, selecteds = [], [], [], [], [],
     mask = []
+    last_n=None
+    last_sel = None
     for res in result:
         op, ret, no, r, select = res
+        last_n = no[-1]
         open_nodes.extend(op)
         returns.append(ret)
         nodes.extend([from_dict(n) for n in no])
@@ -52,38 +59,40 @@ def launch_models(pool,NN: nn.Module, temperature: float, num_proc: int, model_m
         if len(op) > 0:
             mask.extend([1 for _ in range(len(r)-1)] + [0.0])
         selecteds.extend(select)
+        last_sel = select
     returns = torch.cat(returns)
     #pool.terminate()
     #pool.close()
     rewards = rewards
     mask = torch.tensor(mask)
+    # plot_tree(last_n, last_sel, f"figs/time-{int(time.time())}.png",sum(rewards[-1]))
     return open_nodes, returns, nodes, rewards, selecteds, mask
 
-def __make_and_optimize(it, seed, NN, f):
+def __make_and_optimize(it, seed, NN, f, baseline_gap=None,baseline_nodes=None):
     #print("started")
     torch.manual_seed(seed)
-    NN = ray.get(NN)
     nodesel = CustomNodeSelector(NN, "cpu", 1.0)
     if isinstance(f, str):
         model = Model()
         model.readProblem(f)
     else:
         model = f()
-    model.setRealParam("limits/time", 45)
-    model.hideOutput()
-    model.optimize()
-    baseline_gap=model.getGap()
-    baseline_nodes = sum([len(x) for x in model.getOpenNodes()])
+    if baseline_gap is None:
+        model.setRealParam("limits/time", 45)
+        model.hideOutput()
+        model.optimize()
+        baseline_gap=model.getGap()
+        baseline_nodes = sum([len(x) for x in model.getOpenNodes()])
 
     model.freeTransform()
     if not isinstance(f, str):
         model.writeProblem(f"cache/model-{it}.cip")
-
-    model.includeNodesel(nodesel, "custom test",
-                         "just a test", 1000000, 100000000)
-    model.setRealParam("limits/time", 45)
-    model.hideOutput()
-    model.optimize()
+    with torch.inference_mode():
+        model.includeNodesel(nodesel, "custom test",
+                            "just a test", 1000000, 100000000)
+        model.setRealParam("limits/time", 45)
+        model.hideOutput()
+        model.optimize()
     #print("done snd")
 
     op, ret, no, r, select = get_data(nodesel, model, baseline_gap=baseline_gap,baseline_nodes=baseline_nodes)
@@ -92,6 +101,19 @@ def __make_and_optimize(it, seed, NN, f):
     #no = [to_dict(n) for n in no]
     print("done converting, starting to send to main process")
     return (op, ret, no, r, select)
+
+def eval_model(pool, model, data: pd.DataFrame):
+    # NN_ref = ray.put(model)
+    tmp = []
+    d=[]
+    args=[]
+    for i in range(len(data)):
+        datum = data.loc[i]
+        args.append((i,-1, model, datum["name"],datum["gap"],datum["open_nodes"]))
+    d = pool.starmap(__make_and_optimize,args)
+    for _, _, _, r, _ in d:
+        tmp.append(torch.tensor(r).sum().item())
+    wandb.log({"eval reward mean": torch.tensor(tmp).mean(),"eval reward std": torch.tensor(tmp).std(), "eval reward median": np.median(np.array(tmp))})
 
 
 def naive_optim(NN: nn.Module, optim: torch.optim.Optimizer, data: NodeData):
@@ -120,7 +142,8 @@ def make_test_data(num, functions):
     for idx,ns in enumerate(x):
         for seed in ns:
             print("seed",seed)
-            functions[idx](int(seed))
+            if not os.path.exists(f"model-{seed}.cip"):
+                functions[idx](int(seed))
             out.append(f"model-{seed}.cip")
     return out
 
@@ -131,6 +154,7 @@ def fit(cfg, NN,optim, open_nodes, returns, nodes, rewards, selecteds, mask):
             nodes=batch, actions=selecteds, mask=mask, rewards=rewards)
     old_logprob, _, old_vs, _, adv = get_old_data(cfg, NN, batch, data)
     print("fitting....")
+    NN.train()
     r= trange(cfg.training_scheme.update_epochs)
     for _ in r:
         with torch.no_grad():
@@ -148,44 +172,35 @@ def fit(cfg, NN,optim, open_nodes, returns, nodes, rewards, selecteds, mask):
         
         loss = train_ppo(NN,optim,batch,data,o_logp,o_vs,cfg.training_scheme, mb_advantages=ad_o)
         batch.reset_caches()
-        del data
         r.set_description(f"loss {loss}", True)
-    del open_nodes, returns, nodes, rewards, selecteds, mask
+    del open_nodes, returns, nodes, rewards, selecteds, mask, batch
 
 def train(cfg: DictConfig, NN, optim):
     #torch.multiprocessing.set_start_method("spawn")
-    pool = Pool(16)
+    pool = Pool(8)
+    df = pd.read_csv("training_data/info.csv")
+    df_eval = pd.read_csv("eval_data/info.csv")
     #total_rewards = []
     #eval_rewards = []
     funs=[make_tsp, ]
-    test_data = make_test_data(32,funs)
+    #test_data = make_test_data(32,funs)
     for it in range(cfg.env.num_steps):
         print("starting launch round",it)
+        NN.eval()
         open_nodes, returns, nodes, rewards, selecteds, mask = launch_models(
-            pool,NN, 1.0, 12, funs)
+            pool,NN, df, 8, funs)
         r_tmp = [r.sum().item() for r in rewards]
         print(it,"rewards:", r_tmp,)
         rewards = torch.cat(rewards).detach()
-        wandb.log({"train reward mean": torch.tensor(r_tmp).mean()})
+        wandb.log({"train reward mean": torch.tensor(r_tmp).mean(), "train reward median": np.median(np.array(r_tmp))})
         if len(selecteds) < 10:
             print("not enough steps!!!")
             continue
         fit(cfg, NN, optim, open_nodes, returns, nodes, rewards, selecteds, mask)
-        gc.collect()
         if it % 25 == 0:
-            tmp = []
-            NN_ref = ray.put(NN)
-            result = pool.starmap(__make_and_optimize,[(0,0,NN_ref,t) for t in test_data])
-            for d in result:
-                _, _, _, r, _  = d
-                tmp.append(torch.tensor(r).sum().item())
-            wandb.log({"eval reward mean": torch.tensor(tmp).mean(),"eval reward std": torch.tensor(tmp).std()})
-    tmp = []
-    NN_ref = ray.put(NN)
-    for test in test_data:
-        tmp.append((0,0,NN_ref, test))
-    tmp = [d[-2].sum().item() for d in pool.starmap(__make_and_optimize, tmp)]
-    wandb.log({"eval reward mean": torch.tensor(tmp).mean(),"eval reward std": torch.tensor(tmp).std()})
+            eval_model(pool,NN, df_eval)
+
+    eval_model(pool,NN, df_eval)
 
 
 #if __name__ == "__main__":
@@ -194,7 +209,7 @@ def main(cfg: DictConfig):
     #ray.init(num_cpus=12)
     wandb.init(project="BnBBisim", config=OmegaConf.to_container(cfg))
     device = cfg.device
-    NN = CombineEmbedder(12+10, 512)
+    NN = CombineEmbedder(10+10+10, 512)
     NN.to(device)
     optim = torch.optim.AdamW(NN.parameters(), cfg.optimization.lr)
     print(f"""

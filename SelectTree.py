@@ -6,7 +6,7 @@ from copy import deepcopy
 from pyscipopt import Model
 from modules import CombineEmbedder
 from time import sleep, time
-from typing import Dict, List
+from typing import Dict, List, Any
 import numpy as np
 import sys
 
@@ -28,6 +28,48 @@ def powernorm(val : np.ndarray, power : float):
 def signed_log(val : np.ndarray):
     return np.sign(val) * (np.log(abs(val)+1e-3))
 
+def get_model_info(model,power=0.5):
+    NcutsApp = powernorm(model.getNCutsApplied(),power)
+    Nsepa = powernorm(model.getNSepaRounds(),power)
+    gap = model.getGap()
+    # node properties
+    p = []
+    n=0
+    vs = model.getVars()
+    for v in vs:
+        if v.vtype() in ["BINARY", "INTEGER", "IMPLINT"]:
+            n+=1
+            sol = v.getLPSol()
+            p += [abs(sol  - np.floor(sol))]
+    p = np.array(p).reshape(-1)
+    frac_mean = np.mean(p)
+    frac_std = np.std(p)
+    frac_max = np.max(p)
+    frac_min = np.min(np.concatenate([p[p!=0],np.array([1.0])]))
+    hist = np.histogram(np.concatenate([p[p!=0],np.array([1.0])]),10,range=(0,1.0), density=True)[0]
+    hist = hist/hist.sum()
+    # you have to be careful with using isclose for values close to zero
+    # because atol can give false positives. In this case we accept this here
+    already_integral = np.isclose(np.array(p),0).mean()
+    cond = np.log10(model.getCondition())
+    lpi = powernorm(model.lpiGetIterations(),power)
+    info = {
+            "NcutsApp":NcutsApp,
+            "Nsepa":Nsepa,
+            "gap": gap,
+            "lpi": lpi,
+            "cond": cond,
+            "mean to integral": frac_mean,
+            #"std to integral": frac_std,
+            #"max to integral": frac_max,
+            #"min to integral": frac_min,
+            "already_integral": already_integral
+        }
+    print(info,hist)
+
+    return info, hist
+
+
 
 class CustomNodeSelector(Nodesel):
     def __init__(self, comb_model, device :str, temperature :float):
@@ -40,83 +82,31 @@ class CustomNodeSelector(Nodesel):
         self.paths = []
         self.nodes = []
         self.open_nodes = []
+        self.gaps = []
 
         self.added_ids = set()
         self.logit_lookup = dict()
         self.temperature = temperature
     
-    def get_tree(self, node):
+    def get_tree(self, node, info : Dict[str, Any], hist: np.ndarray,power=0.5):
         self.added_ids.add(node.getNumber())
-        power=0.5
-        #age = powernorm(torch.tensor(self.model.getNNodes()),power)
-        primalbound = signed_log(self.model.getPrimalbound()).clip(-10,10)
-        NcutsApp = powernorm(self.model.getNCutsApplied(),power)
-        Nsepa = powernorm(self.model.getNSepaRounds(),power)
-        dualbound = signed_log(node.getLowerbound()).clip(-10,10)
-        local_estimate = signed_log(self.model.getLocalEstimate()).clip(-10,10)
-        val = signed_log(self.model.getSolObjVal(None)).clip(-10,10)
-        gap = np.clip(self.model.getGap(),-10,10)
-        # node properties
-        depth = powernorm(node.getDepth()/(self.model.getNNodes()+1),power)
-        #estimate = powernorm(torch.tensor(node.getEstimate()),power).clamp(-100,100)
-        p = []
-        n=0
-        vs = self.model.getVars()
-        for v in vs:
-            if v.vtype() in ["BINARY", "INTEGER", "IMPLINT"]:
-               n+=1
-               sol = v.getLPSol()
-               p += [abs(sol  - np.floor(sol))]
-        p = np.array(p).reshape(-1)
-        frac_mean = 10*np.mean(p)
-        frac_std = 10*np.std(p)
-        frac_max = 10*np.max(p)
-        frac_min = 10*np.min(np.concatenate([p[p!=0],np.array([1.0])]))
-        hist = np.histogram(np.concatenate([p[p!=0],np.array([1.0])]),10,range=(0,1.0), density=True)[0]
-        # you have to be careful with using isclose for values close to zero
-        # because atol can give false positives. In this case we accept this here
-        already_integral = np.isclose(np.array(p),0).mean()
-
-        constraints_added = powernorm(node.getNAddedConss(),power)
-        nbranch, nconsprop, nprop = node.getNDomchg()
-        domchange_branch = powernorm(nbranch,power)
-        domchange_consprop = powernorm(nconsprop,power)
-        domchange_prop = powernorm(nprop,power)
-        cond = np.log10(self.model.getCondition()).clip(0,10)
-
         tmp =  node.getDomchg()
         dmch = np.array([x.getNewBound() for x in tmp.getBoundchgs()] if tmp is not None else 0.0).astype(float)
         expDomch = powernorm(dmch.mean(),power)
-        stdDomch = powernorm(dmch.std(),power)
-        lpi = powernorm(self.model.lpiGetIterations(),power)
-
-        info = {
-                    "NcutsApp":NcutsApp,
-                    "Nsepa":Nsepa,
-                    "gap": gap,
-                    "lpi": lpi,
-                    #"dual": dualbound,
-                    #"best_local_sol": local_estimate,
-                    #"val":val,
-                    "depth_normed":depth,
-                    #"constraints_added" : constraints_added,
-                    #"domchange_branch":domchange_branch,
-                    #"domchange_consprop":domchange_consprop,
-                    #"domchange_prop": domchange_prop,
-                    "expDomch" : expDomch,
-                    #"stdDomch":stdDomch,
-                    "cond": cond,
-                    #"primalbound":primalbound,
-                    # "active ratio" : actives,
-                    "mean to integral": frac_mean,
-                    "std to integral": frac_std,
-                    "max to integral": frac_max,
-                    "min to integral": frac_min,
-                    "already_integral": already_integral
-                }
-        print(info,hist)
+        depth = powernorm(node.getDepth()/(self.model.getNNodes()+1),power)
+        info["expDomch"] = expDomch
+        info["depth_normed"] = depth
+        info["n_AddedConss"] = powernorm(node.getNAddedConss(),power)
+        slack_cons = []
+        for c in self.model.getConss():
+            if c.isLinear():
+                slack_cons.append(self.model.getSlack(c))
+        slack_cons = np.array(slack_cons)
+        slack_cons = signed_log(slack_cons[np.logical_and(slack_cons<10**20, slack_cons>-10**20)])
+        slack_hist = np.histogram(np.concatenate([slack_cons,np.array([1.0])]),10,range=(0,1.0), density=True)[0]
+        slack_hist = slack_hist/slack_hist.sum()
         
-        features = torch.from_numpy(np.array(list(info.values())+ hist.tolist())).detach().half()
+        features = torch.from_numpy(np.array(list(info.values())+ hist.tolist()+slack_hist.tolist()).clip(-10,10)).detach().half()
         new_node = BinaryNetworkTree(leftNode=None,
                 rightNode=None,
                 features=features,#torch.ones(128),
@@ -145,22 +135,29 @@ class CustomNodeSelector(Nodesel):
         if nodes is None:
             print("dumb selection")
             return {"selnode":self.model.getBestNode()}
+        power=0.5
+        info,hist = get_model_info(self.model,power=power)
         for c in nodes:
-            self.get_tree(c)
+            self.get_tree(c,info,hist,power=power)
+        t0 = time()
         trees = TreeBatch([self.tree],self.device) # type: ignore
-        self.comb_model.eval()
+        #self.comb_model.eval()
         open_node_ids = [n.getNumber() for n in open_nodes]
-        #t0 = time()
         trees.embeddings(self.comb_model,self.temperature,[open_node_ids])
-        self.comb_model.train()
+        # self.comb_model.train()
+        print("Time taken", time()-t0,"newly added nodes",len(nodes))
+        t0 = time()
         tmp, _ = trees[0].get_prob()
-        #print("Time taken", time()-t0)
         self.logit_lookup = {k:v.cpu() for k,v in tmp.items()}
         node = sample_open_nodes(open_nodes,self.logit_lookup)
+        print("Time taken for prob", time()-t0,)
         self.paths.append(node.getNumber()) # type: ignore
+        self.gaps.append(np.clip(self.model.getGap(),-10,10))
         self.open_nodes.append(open_node_ids)
         trees.reset_caches()
         self.nodes.append(to_dict(self.tree))
+        # now cleanup the tree??
+        # self.tree.prune_closed_branches(open_node_ids)
         return {"selnode": node}
     
     def nodecomp(self, node1, node2):

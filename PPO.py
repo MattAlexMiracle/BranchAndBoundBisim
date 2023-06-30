@@ -55,11 +55,23 @@ def compute_advantage(returns, vs):
 @torch.inference_mode()
 def get_old_data(conf, NN_old: nn.Module, batch: TreeBatch, data: NodeData):
     # with torch.autocast("cuda"):
-    batch.embeddings(NN_old, 1.0, data.open_nodes)
-    old_logprob, old_qs, old_vs, entropy_old = batch.get_logprob(
-        data.actions, data.open_nodes)
+    old_logprob, old_qs, old_vs, entropy_old = [],[],[],[]
+    for idx,b in enumerate(batch):
+        tree = TreeBatch([b])
+        tree.embeddings(NN_old, 1.0, [data.open_nodes[idx]])
+        o_lp, o_q, o_v, o_ent = tree.get_logprob(
+            [data.actions[idx]], [data.open_nodes[idx]])
+        old_logprob.append(o_lp)
+        old_qs.append(o_q)
+        old_vs.append(o_v)
+        entropy_old.append(o_ent)
+    old_logprob = torch.cat(old_logprob)
+    old_qs = torch.cat(old_qs)
+    old_vs = torch.cat(old_vs)
+    entropy_old = torch.cat(entropy_old)
     adv = advantages_from_list(
         data.rewards, old_vs, data.mask, conf.env.decay, conf.optimization.gae)
+    batch.reset_caches()
     return old_logprob, old_qs, old_vs, entropy_old, adv
 
 
@@ -113,8 +125,8 @@ def train_ppo(NN: nn.Module, optimizer: torch.optim.Optimizer, batch: TreeBatch,
                "pg_loss" : pg_loss.detach().item(),
                "mean ratio": ratio.mean().detach().item()
                })
-    if approx_kl > 100:
-        print("emergency skip due to large kl-div")
+    if approx_kl > 50:
+        print("emergency skip due to large kl-div", approx_kl)
         optimizer.zero_grad()
         return loss.detach().item()
     optimizer.zero_grad()

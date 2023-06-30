@@ -7,7 +7,9 @@ import torch
 #from SelectTree import CustomNodeSelector
 from dataclasses import dataclass
 from Tree import TreeBatch
-from typing import List
+from typing import List, Dict, Any
+import igraph as ig
+from datetime import datetime
 
 @dataclass
 class NodeData:
@@ -37,7 +39,7 @@ def get_data(nodesel, model, baseline_gap=None, baseline_nodes=None):
         tmp=0
     text = f"""
     ================================================
-    Problemname: {model.getProbName()}
+    Problemname: {model.getProbName()} {datetime.now().strftime("%H:%M:%S")}
            Baseline               NN
     GAP   {tmp*10}    {gap}
     Nodes {baseline_nodes}    {len(open_nodes)}
@@ -52,10 +54,31 @@ def get_data(nodesel, model, baseline_gap=None, baseline_nodes=None):
         n_nodes = n/(baseline_nodes + 1e-8) -1
         gap = 1*gap + (1-1)*n_nodes
     
-    rewards[-1] = 10*(rewards[-1] - min(gap,10))
+    rewards[-1] = 10*(rewards[-1] - np.clip(gap,-5,5))
     returns = get_returns(rewards,0.99)
     selecteds = nodesel.paths
     return open_nodes, returns, nodes, rewards, selecteds
+
+def get_data_full_gaps(nodesel, model,):
+    open_nodes = nodesel.open_nodes
+    if len(nodesel.nodes) == 0:
+        return [], torch.Tensor(), [], torch.Tensor(), []
+    nodes = nodesel.nodes
+    rewards = -torch.tensor(nodesel.gaps)*10
+    gap = model.getGap()*10
+    text = f"""
+    ================================================
+    Problemname: {model.getProbName()}
+            NN
+    GAP   {gap}
+    Nodes {len(open_nodes)}
+    ================================================
+    """
+    print(text)
+    returns = get_returns(rewards,0.99)
+    selecteds = nodesel.paths
+    return open_nodes, returns, nodes, rewards, selecteds
+
 
 
 def powernorm(val : torch.Tensor, power : float):
@@ -65,6 +88,48 @@ def chunks(lst, n):
     """Yield successive n-sized chunks from lst."""
     for i in range(0, len(lst), n):
         yield lst[i:i + n]
+
+
+def plot_tree(dct : Dict[Any,Any], chosen: List[int],filename:str, gap:float):
+    def build_tree(graph, data, parent=None):
+        if "tree_id" in data.keys():
+            value = str(data["tree_id"])
+            graph.add_vertex(name=value)
+        else:
+            return
+        if parent is not None:
+            graph.add_edge(parent, value)
+        for key, child in data.items():
+            if key != "tree_id" and isinstance(child, dict):
+                #print(child)
+                build_tree(graph, child, parent=value)
+    tree = ig.Graph()
+    build_tree(tree,dct)
+    tree.vs["label"] = tree.vs["name"]
+    fig, ax = plt.subplots()
+    layout = tree.layout("kamada_kawai")
+    visual_style = {}
+    visual_style["vertex_size"] = 1
+    cs= []
+    fig.set_figheight(100)
+    fig.set_figwidth(100)
+    for i in tree.vs["name"]:
+        if int(i) in chosen:
+            i = int(i)
+            #print("chosen!", chosen.index(i)/len(chosen) )
+            cs.append([0.5 + 0.5*chosen.index(i)/len(chosen), 0.0, 0.0])
+        else:
+            cs.append([0.0, 0.0, 1.0])
+    visual_style["vertex_color"] = cs
+    visual_style["bbox"] = (300, 300)
+    visual_style["margin"] = 30
+
+    ig.plot(tree,target=ax, **visual_style,)
+    plt.text(0,0, f"gap: {gap}")
+    plt.savefig(filename)
+    plt.close(fig)
+    plt.close()
+
 
 
 def plotting(train_rewards, eval_rewards):

@@ -2,10 +2,17 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from typing import Optional, Tuple, List, Dict, Any, Callable
+from numba import njit, int32
+from numba.typed import List
+from numba.core.errors import NumbaDeprecationWarning, NumbaPendingDeprecationWarning
+import warnings
+
+warnings.simplefilter('ignore', category=NumbaDeprecationWarning)
+warnings.simplefilter('ignore', category=NumbaPendingDeprecationWarning)
 import numpy as  np
 
 class WhitenTransform(nn.Module):
-    def __init__(self, size, ema_cov=0.95,ema_mean=0.95) -> None:
+    def __init__(self, size, ema_cov=0.90,ema_mean=0.90) -> None:
         super().__init__()
         # self.cov = torch.eye(size)
         self.register_buffer("cov",torch.eye(size))
@@ -18,26 +25,44 @@ class WhitenTransform(nn.Module):
         return (1-shrinkage)*cov + shrinkage*torch.trace(cov)/cov.shape[0]*torch.eye(cov.shape[0])
     
     def forward(self, x):
-        if self.training:
-            cov = torch.cov(x.T)
-            #print(cov)
-            self.cov = self.ema_cov*self.cov + (1-self.ema_cov)*cov
-            self.mean = self.ema_mean*self.mean + (1-self.ema_mean)*torch.mean(x,0)
-        chol = torch.linalg.cholesky(torch.linalg.inv(self.cov+torch.eye(self.size)*0.1))
+        with torch.no_grad():
+            if self.training:
+            
+                cov = torch.cov(x.T)
+                #print(cov)
+                self.cov = self.ema_cov*self.cov + (1-self.ema_cov)*cov
+                self.mean = self.ema_mean*self.mean + (1-self.ema_mean)*torch.mean(x,0)
+            # chol = torch.linalg.cholesky(torch.linalg.inv(self.cov+torch.eye(self.size)*0.01))
+            L,Q = torch.linalg.eigh(self.cov+0.01*torch.eye(self.size).to(x.device))
+        chol = torch.diag(L**(-1/2)) @ Q.T
+        #print(chol)
         return torch.mm((x-self.mean),chol)
 
 
 class FeatureEmbedder(nn.Module):
-    def __init__(self, feature_in, feature_embed_out: int):
+    def __init__(self, feature_in, feature_embed_out: int ,n_layers:int = 2, scale=0.5):
         super().__init__()
         self.embd = nn.Sequential(
-            #nn.BatchNorm1d(feature_in),
-            WhitenTransform(feature_in),
+            nn.BatchNorm1d(feature_in),
+            #WhitenTransform(feature_in),
             nn.Linear(feature_in, feature_embed_out),
-            nn.LeakyReLU(),
+            #nn.LeakyReLU(),
             #nn.Linear(feature_embed_out, feature_embed_out),
-            nn.BatchNorm1d(feature_embed_out),
+            #nn.LayerNorm(feature_embed_out),
+            #nn.BatchNorm1d(feature_embed_out),
         )
+        layers = []
+        
+        for i in range(n_layers):
+            layers.append(
+                nn.Sequential(
+                #nn.LayerNorm(feature_embed_out),
+                nn.Linear(feature_embed_out, feature_embed_out),
+                ))
+        self.layers = nn.ModuleList(layers)
+        self.weighters = nn.Parameter(torch.zeros(n_layers))
+        self.layernorm_out = nn.LayerNorm(feature_embed_out,elementwise_affine=False)
+        self.scale = scale
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # since at the beginning each node is independent,
@@ -45,6 +70,9 @@ class FeatureEmbedder(nn.Module):
         # we can't do this later in the combiner due to
         # the correlations between nodes
         x = F.leaky_relu(self.embd(x))
+        for idx,m in enumerate(self.layers):
+            x = F.leaky_relu(m(x))*self.weighters[idx] + x
+        x = self.layernorm_out(x)*self.scale
         return x
 
 def mapping(probs, steps):
@@ -67,20 +95,43 @@ class SwiGLU(nn.Module):
     def forward(self, x):
         x, gate = x.chunk(2, dim=-1)
         return F.silu(gate) * x
-    
+
+@njit(parallel=True)
+def transform_ind(label ,neighbors):
+    neighs = np.zeros(neighbors.shape)
+    for i in range(neighbors.shape[0]):
+        #for j in range(neighbors.shape[1]):
+            # np.argwhere(label==neighbors[i,j])[0][0]
+        neighs[i,0] = label.index(neighbors[i,0])
+        neighs[i,1] = label.index(neighbors[i,1])
+    return neighs
+
+
+def find_neighbor_indices(label:torch.LongTensor, neighbors:torch.LongTensor):
+    neighbors = neighbors.squeeze(1)
+    #print(neighbors.shape)
+
+    #neighbor_indices = torch.ones(len(neighbors),2,).long()*(-1)
+    label = label.tolist()
+    neighbor_indices = transform_ind(label, neighbors.numpy())
+    # print("neighbors",neighbors)
+    # print("neighbor ind", neighbor_indices)
+    # print("labels", label)
+    return torch.LongTensor(neighbor_indices)
 
 @torch.no_grad()
 def init(x : nn.Module):
     if type(x) ==  nn.Linear:
         torch.nn.init.normal_(x.weight,0,0.01)
-        torch.nn.init.constant_(x.bias, 0)
+
 @torch.no_grad()
 def init_ortho(x : nn.Module):
     if type(x) ==  nn.Linear:
         torch.nn.init.orthogonal_(x.weight,)
-        torch.nn.init.constant_(x.bias, 0)
+        if x.bias is not None:
+            torch.nn.init.constant_(x.bias, 0)
 class CombineEmbedder(nn.Module):
-    def __init__(self,feat_emb_sz:int, node_emb_sz: int):
+    def __init__(self,feat_emb_sz:int, node_emb_sz: int, scale_features = 0.5, depth = 2):
         super().__init__()
         self.node_emb_sz = node_emb_sz
         self.feat_emb_sz = feat_emb_sz
@@ -90,28 +141,23 @@ class CombineEmbedder(nn.Module):
         #                          )
         self.node_emb = nn.Sequential(
             nn.LayerNorm(node_emb_sz),
-            nn.Linear(node_emb_sz,2*node_emb_sz),
-            #nn.LeakyReLU(),
+            (nn.Linear(node_emb_sz,node_emb_sz*2)),
             SwiGLU(),
-            nn.Linear(node_emb_sz,node_emb_sz),
+            #nn.LeakyReLU(),
+            (nn.Linear(node_emb_sz,node_emb_sz)),
             nn.LeakyReLU(),
-            #nn.BatchNorm1d(node_emb_sz,affine=False),
             )
-        #self.feat_emb_v = FeatureEmbedder(self.feat_emb_sz,node_emb_sz)
-        #self.node_emb_v = nn.Sequential(
-        #    nn.Linear(node_emb_sz,node_emb_sz),
-        #    nn.LeakyReLU(),
-        #    nn.Linear(node_emb_sz,node_emb_sz),
-        #    nn.LeakyReLU(),
-        #    )
-        self.feat_emb = FeatureEmbedder(self.feat_emb_sz,node_emb_sz)
+        self.depth = depth
+        self.scale_features = scale_features
+        self.scale_steps = (1-scale_features)/self.depth
+        self.feat_emb = FeatureEmbedder(self.feat_emb_sz,node_emb_sz,scale=scale_features)
         self.weight = nn.Sequential(
             nn.LayerNorm(node_emb_sz),
             nn.Linear(node_emb_sz,2*node_emb_sz),
             SwiGLU(),
-            nn.Linear(self.node_emb_sz,1)
+            nn.Linear(self.node_emb_sz,1,bias=False),
+            #nn.Tanh()
         )
-        #self.bn_v = nn.LayerNorm(2*self.node_emb_sz)
         self.value_head = nn.Sequential(
             nn.LayerNorm(node_emb_sz),
             nn.Linear(node_emb_sz,node_emb_sz*2),
@@ -129,48 +175,44 @@ class CombineEmbedder(nn.Module):
         #self.feat_emb.apply(init)
         #self.value_head.apply(init)
 
-    def forward(self, raw_feats : torch.Tensor, uids : torch.LongTensor, id_map : torch.Tensor) -> Tuple[torch.Tensor,torch.Tensor, torch.Tensor]:
-        indices_sorted = torch.argsort(uids, dim=0)
+    def forward(self, raw_feats : torch.Tensor, uids : torch.LongTensor, id_map : torch.LongTensor) -> Tuple[torch.Tensor,torch.Tensor, torch.Tensor]:
+        #indices_sorted = torch.argsort(uids, dim=0)
         
-        raws = raw_feats[indices_sorted]
-        id_map = id_map[indices_sorted]
-        sorted_feats = torch.cat([raws, torch.zeros((1,self.feat_emb_sz), device=raw_feats.device)])
+        #raws = raw_feats[indices_sorted]
+        #id_map = id_map[indices_sorted]
+        #sorted_feats = torch.cat([raws, torch.zeros((1,self.feat_emb_sz), device=raw_feats.device)])
+        sorted_feats = torch.cat([raw_feats, torch.zeros((1,self.feat_emb_sz), device=raw_feats.device)])
+        #print(uids)
+        uids = torch.cat([uids, torch.ones(1,dtype=int)*(-1)])
         # now embedd them:
         sorted_feats = self.feat_emb(sorted_feats)
         
         # this is also used for the fixed input features, but not with the extra "no neighbor" feature
-        inital_feat = sorted_feats[:-1].clone()
+        # inital_feat = sorted_feats[:-1].clone()
 
-        ## value stuff
-        """feats_v = self.feat_emb_v(sorted_feats)
-        feats_v_init = feats_v[:-1].clone()"""
 
-        for _ in range(5):
+        ids2indices = find_neighbor_indices(uids,id_map)
+
+        for _ in range(self.depth):
             # 1 retrieve the relevant features using id_map
-            feats_l,feats_r = torch.chunk(sorted_feats[id_map].reshape(raw_feats.shape[0],-1),2,-1)
+            # sorted_feats[id_map].reshape(raw_feats.shape[0],-1)
+            # print(sorted_feats[ids2indices].shape)
+            # feats_l,feats_r = torch.chunk(sorted_feats[ids2indices].reshape(len(uids)-1,-1),2,-1)
             #feats_l = self.node_emb(feats_l)
             #feats_r = self.node_emb(feats_r)
-            feats = (feats_r + feats_l+ inital_feat)/3
+            feats = sorted_feats[ids2indices].mean(1)#(feats_r + feats_l)/2
+            #print("feats", feats.shape)
             feats = self.node_emb(feats)
             # print("feats",feats.shape, id_map.shape, inital_feat.shape)
-            new = (sorted_feats[:-1] + feats)/2
+            new = sorted_feats[:-1] + feats*self.scale_steps
             # we ignore the first entry since that is simply the "no neighbor" case
             sorted_feats[:-1] = new
-            #####################
-            ##### value stuff ###
-            #####################
-            """feats = feats_v[id_map].reshape(raw_feats.shape[0],-1)
-            feats = self.node_emb_v(self.bn_v(feats))
-            # print("feats",feats.shape, id_map.shape, inital_feat.shape)
-            new = (feats_v_init + feats + feats_v_init[:-1])/3
-            # we ignore the first entry since that is simply the "no neighbor" case
-            feats_v[:-1] = new"""
 
         # undo the sorting and remove the synthetic "no neighbor" node
-        x = sorted_feats[:-1][uids]
+        x = sorted_feats[:-1]#[uids]
         #print(x.mean(0),x.std(0))
-        w = self.weight(x)
-        f = inital_feat[uids]
+        w = self.weight(x)#torch.tanh(self.weight(x)/10)*10 # this is approximately f(x) = x for small x
+        #f = inital_feat[uids]
         v  = self.value_head(x.detach())
         #v  = mapping(self.value_head(x),self.codebook)
         return x, w, v

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 from dataclasses import dataclass
-from typing import Tuple, List, Dict,Any
+from typing import Tuple, List, Dict,Any, Set
 from enum import Enum
 from torch import nn
 from tqdm import trange
@@ -36,14 +36,14 @@ class BinaryNetworkTree:
     sum_cache : torch.Tensor | None = None
     size_cache: int | None = None
     
-    @torch.no_grad()
-    def get_embeddable(self) -> Tuple[List[np.ndarray], List[torch.Tensor], List[int]]:
+    """@torch.no_grad()
+    def get_embeddable(self) -> Tuple[List[List[List[int]]], List[torch.Tensor], List[int]]:
         li = self.leftNode.uid if self.leftNode else -1
         ri = self.rightNode.uid if self.rightNode else -1
 
         ls = [self.uid]
         raw_feats = [self.features]
-        lsID = [np.array([[li, ri]],dtype=int)]
+        lsID = [[[li, ri]]]
         if self.leftNode is not None:
             left_id, raw_f, left_uid = self.leftNode.get_embeddable()
             lsID.extend(left_id)
@@ -54,7 +54,29 @@ class BinaryNetworkTree:
             lsID.extend(right_id)
             ls.extend(right_uid)
             raw_feats.extend(raw_f)
+        return lsID, raw_feats, ls"""
+    @torch.no_grad()
+    def get_embeddable(self) -> Tuple[List[List[List[int]]], List[torch.Tensor], List[int]]:
+        stack = [self]
+        lsID = []
+        raw_feats = []
+        ls = []
+
+        while stack:
+            node = stack.pop(0)
+            li = node.leftNode.uid if node.leftNode else -1
+            ri = node.rightNode.uid if node.rightNode else -1
+            lsID.append([[li,ri]]) 
+            raw_feats.append(node.features)
+            ls.append(node.uid)
+
+            if node.leftNode is not None:
+                stack.insert(0,node.leftNode)
+
+            if node.rightNode is not None:
+                stack.insert(0,node.rightNode)
         return lsID, raw_feats, ls
+
 
     def assign_embeddings(self, embeddings: torch.Tensor,values: torch.Tensor, uids: List[int], indices:List[int]) -> None:
         if self.leftNode is not None:
@@ -142,21 +164,23 @@ class BinaryNetworkTree:
         dct_v.update(rv)
         return dct, dct_v
 
-    def add_node(self, node : BinaryNetworkTree, parent_treeid : int) -> None:
+    def add_node(self, node : BinaryNetworkTree, parent_treeid : int) -> bool:
         if self.tree_id == node.tree_id:
             print("\n\n\nPANIC THIS SHOULD NEVER HAPPEN!!\n\n\n")
             sleep(100)
         if self.tree_id != parent_treeid:
+            found = False
             if self.leftNode is not None:
-                self.leftNode.add_node(node, parent_treeid)
-            if self.rightNode is not None:
-                self.rightNode.add_node(node, parent_treeid)
+                found = self.leftNode.add_node(node, parent_treeid)
+            if not found and self.rightNode is not None:
+                found = self.rightNode.add_node(node, parent_treeid)
+            return found
         else:
             if self.leftNode is None:
                 self.leftNode = node
             else:
                 self.rightNode = node
-            return
+            return True
         
     def get_all_numbers(self) -> List[int]:
         ls = [self.tree_id]
@@ -216,6 +240,22 @@ class BinaryNetworkTree:
         self.sum_cache = s.to(self.device)
         return s.to(self.device)
     
+    def prune_closed_branches(self,open_nodes: List[int]) -> bool:
+        if self.leftNode is not None:
+            if self.leftNode.prune_closed_branches(open_nodes):
+                print("pruned successfully!")
+                self.leftNode = None            
+        if self.rightNode is not None:
+            if self.rightNode.prune_closed_branches(open_nodes):
+                print("pruned successfully!")
+                self.rightNode = None
+        # now check if self is in open nodes
+        if self.tree_id in open_nodes:
+            return False
+        elif self.leftNode is None and self.rightNode is None:
+            return True
+        return False
+
     @torch.no_grad()
     def reset_caches(self) -> None:
         #self.embeddedFeatures = torch.zeros_like(self.embeddedFeatures)
@@ -269,8 +309,8 @@ def from_dict(d: Dict[str, Any]) -> BinaryNetworkTree|None:
 class TreeBatch:
     def __init__(self, trees: List[BinaryNetworkTree], device="cpu") -> None:
         self.trees = trees
-        for tree in self.trees:
-            tree.set_device(device)
+        #for tree in self.trees:
+        #    tree.set_device(device)
         self.device = device
         self.assign_uids()
 
@@ -294,8 +334,8 @@ class TreeBatch:
             id_map.extend(i_map)
             uids.append(id)
             raw_feats.extend(r)
-        id_map = np.concatenate(id_map)
-        return torch.from_numpy(id_map).long(), torch.stack(raw_feats), uids
+        id_map = torch.tensor(id_map,dtype=int)
+        return id_map, torch.stack(raw_feats), uids
 
     def batch_action(self, action: List[List[str]]) -> torch.Tensor:
         probs = torch.zeros(len(self.trees))
@@ -314,7 +354,7 @@ class TreeBatch:
         # make sure to reset all buffers before doing this:
         #t = time()
         self.reset_caches()
-        id_map, raw_feats,uids = self.get_embeddable()
+        id_map, raw_feats, uids = self.get_embeddable()
         #print("got embeddables",time()-t)
         #t = time()
         uids_flat = torch.LongTensor([item for sublist in uids for item in sublist])
@@ -396,7 +436,7 @@ if __name__ == '__main__':
     combineEmbedder.to(device)
     # combineEmbedder = torch.compile(combineEmbedder, mode="reduce-overhead")
     
-    optim = torch.optim.Adam(combineEmbedder.parameters(),3e-4)
+    optim = torch.optim.AdamW(combineEmbedder.parameters(),3e-4, weight_decay=0.01)
     # 1. embedd all features:
     #trees.embeddings(featureEmbedder,combineEmbedder)
     #print([x.log_p for x in trees])
