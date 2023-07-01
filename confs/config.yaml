@@ -5,9 +5,10 @@ device: "cpu"
 
 optimization:
   lr: 5e-5
-  batchsize: 64
+  batchsize: 128
   gae: 0.9
 
 env:
   num_steps: 50
   decay: 0.99
+  harden_gaps: 0.0

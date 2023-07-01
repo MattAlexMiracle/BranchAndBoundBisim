@@ -25,7 +25,7 @@ import wandb
 import os
 import pandas as pd
 
-def launch_models(pool,NN: nn.Module, csv_info : pd.DataFrame, num_proc: int, model_makers: List[Callable]) -> Tuple[List[List[int]],
+def launch_models(cfg : DictConfig, pool,NN: nn.Module, csv_info : pd.DataFrame, num_proc: int) -> Tuple[List[List[int]],
                                                                                                            torch.Tensor,
                                                                                                            List[BinaryNetworkTree],
                                                                                                            List[float],
@@ -33,10 +33,12 @@ def launch_models(pool,NN: nn.Module, csv_info : pd.DataFrame, num_proc: int, mo
                                                                                                            torch.Tensor]:
     g = torch.Generator()
     arg_list = []
+    csv_indices = []
     # NN_ref = ray.put(NN)
     for it in range(num_proc):
         seed = g.seed()
         i = int(torch.randint(0, len(csv_info), (1,)))
+        csv_indices.append(i)
         datum = csv_info.loc[i]
         arg_list.append((it,seed, NN, datum["name"],datum["gap"],datum["open_nodes"]))
     #for it in range(num_proc//2):
@@ -47,10 +49,8 @@ def launch_models(pool,NN: nn.Module, csv_info : pd.DataFrame, num_proc: int, mo
     result = pool.starmap(__make_and_optimize,arg_list)
     open_nodes, returns, nodes, rewards, selecteds = [], [], [], [], [],
     mask = []
-    last_n=None
-    last_sel = None
-    for res in result:
-        op, ret, no, r, select = res
+    for csv_ind, res in zip(csv_indices,result):
+        op, ret, no, r, select, gap = res
         last_n = no[-1]
         open_nodes.extend(op)
         returns.append(ret)
@@ -59,7 +59,10 @@ def launch_models(pool,NN: nn.Module, csv_info : pd.DataFrame, num_proc: int, mo
         if len(op) > 0:
             mask.extend([1 for _ in range(len(r)-1)] + [0.0])
         selecteds.extend(select)
-        last_sel = select
+        if gap < csv_info.at[csv_ind,"gap"]:
+            print("updated",csv_ind, "from value", csv_info.at[csv_ind,"gap"], "to value", gap)
+            csv_info.at[csv_ind,"gap"] = cfg.env.harden_gaps*gap  + (1-cfg.env.harden_gaps)*csv_info.at[csv_ind,"gap"]
+                
     returns = torch.cat(returns)
     #pool.terminate()
     #pool.close()
@@ -96,11 +99,12 @@ def __make_and_optimize(it, seed, NN, f, baseline_gap=None,baseline_nodes=None):
     #print("done snd")
 
     op, ret, no, r, select = get_data(nodesel, model, baseline_gap=baseline_gap,baseline_nodes=baseline_nodes)
+    gap = model.getGap()
     model.freeProb()
     # op, ret, no, r, select
     #no = [to_dict(n) for n in no]
     print("done converting, starting to send to main process")
-    return (op, ret, no, r, select)
+    return (op, ret, no, r, select, gap)
 
 def eval_model(pool, model, data: pd.DataFrame):
     # NN_ref = ray.put(model)
@@ -111,7 +115,7 @@ def eval_model(pool, model, data: pd.DataFrame):
         datum = data.loc[i]
         args.append((i,-1, model, datum["name"],datum["gap"],datum["open_nodes"]))
     d = pool.starmap(__make_and_optimize,args)
-    for _, _, _, r, _ in d:
+    for _, _, _, r, _, _ in d:
         tmp.append(torch.tensor(r).sum().item())
     wandb.log({"eval reward mean": torch.tensor(tmp).mean(),"eval reward std": torch.tensor(tmp).std(), "eval reward median": np.median(np.array(tmp))})
 
@@ -187,8 +191,8 @@ def train(cfg: DictConfig, NN, optim):
     for it in range(cfg.env.num_steps):
         print("starting launch round",it)
         NN.eval()
-        open_nodes, returns, nodes, rewards, selecteds, mask = launch_models(
-            pool,NN, df, 8, funs)
+        open_nodes, returns, nodes, rewards, selecteds, mask = launch_models(cfg,
+            pool,NN, df, 8)
         r_tmp = [r.sum().item() for r in rewards]
         print(it,"rewards:", r_tmp,)
         rewards = torch.cat(rewards).detach()
@@ -207,6 +211,7 @@ def train(cfg: DictConfig, NN, optim):
 @hydra.main(version_base=None,config_path="confs", config_name="config")
 def main(cfg: DictConfig):
     #ray.init(num_cpus=12)
+    print(cfg)
     wandb.init(project="BnBBisim", config=OmegaConf.to_container(cfg))
     device = cfg.device
     NN = CombineEmbedder(10+10+10, 512)
