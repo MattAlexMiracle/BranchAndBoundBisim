@@ -8,6 +8,10 @@ optimization:
   batchsize: 128
   gae: 0.9
 
+model:
+  features: 30
+  hidden_dim : 512
+
 env:
   num_steps: 50
   decay: 0.99

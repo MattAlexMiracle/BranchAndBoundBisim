@@ -10,7 +10,9 @@ from time import time
 import numpy as np
 from time import sleep
 import torch.multiprocessing as mp
-
+from copy import deepcopy
+from numba import njit, int32
+from collections import deque
 
 def _build_index_list(nested_list):
     result = []
@@ -19,6 +21,82 @@ def _build_index_list(nested_list):
         result.append(list(range(index, index+len(lst))))
         index += len(lst)
     return result
+
+
+
+@torch.no_grad()
+def get_embeddable(tree) -> Tuple[List[List[List[int]]], List[torch.Tensor], List[int]]:
+    stack = deque([tree])
+    lsID = []
+    raw_feats = []
+    ls = []
+
+    while stack:
+        node = stack.popleft()
+        li = node.leftNode.uid if node.leftNode else -1
+        ri = node.rightNode.uid if node.rightNode else -1
+        lsID.append([[li,ri]]) 
+        raw_feats.append(node.features)
+        ls.append(node.uid)
+
+        if node.leftNode is not None:
+            stack.insert(0,node.leftNode)
+
+        if node.rightNode is not None:
+            stack.insert(0,node.rightNode)
+    return lsID, raw_feats, ls
+
+
+def assign_embeddings(tree, embeddings: torch.Tensor,values: torch.Tensor, uids: List[int], indices:List[int]) -> None:
+    stack = deque([tree])
+    while stack:
+        node = stack.popleft()
+        if node.leftNode is not None:
+            #self.leftNode.assign_embeddings(embeddings,values, uids,indices,)
+            stack.insert(0,node.leftNode)
+        if node.rightNode is not None:
+            stack.insert(0,node.rightNode)
+            #self.rightNode.assign_embeddings(embeddings,values, uids,indices,)
+
+        if node.uid in uids:
+            idx = indices[uids.index(node.uid)]
+            node.weight = embeddings[idx]
+            node.value = values[idx]
+
+def prepare_logprob(tree,temperature : float, legal_ids:List[int]) -> None:
+    stack = deque([tree])
+    out = deque([tree])
+    while stack:
+        node = stack.popleft()
+        if node.leftNode is not None:
+            out.insert(0,node.leftNode)
+            stack.insert(0,node.leftNode)
+        if node.rightNode is not None:
+            out.insert(0,node.rightNode)
+            stack.insert(0,node.rightNode) 
+    while out:
+        node = out.popleft()
+        # remove useless leaves
+        if node.rightNode is None and node.leftNode is None and node.tree_id not in legal_ids:
+            s = torch.tensor([-float("inf")],device=node.device)
+            node.sum_cache = s.to(node.device)   
+        sz = torch.zeros(2,device=node.device)
+        sz[0] = node.leftNode.sum_cache+1 if node.leftNode else 1
+        sz[1] = node.rightNode.sum_cache+1 if node.rightNode else 1
+        node.size_cache = sz.sum()-1
+        w = torch.zeros(2,device=node.device)
+        w[0] = node.leftNode.sum_cache if node.leftNode else torch.zeros(1, device=node.device)
+        w[1] = node.rightNode.sum_cache if node.rightNode else torch.zeros(1, device=node.device)
+        # now fill the cache
+        node.sum_cache = node.weight
+        if w[0] != -float("inf"):
+            node.sum_cache = node.sum_cache + w[0]
+        elif w[1] != -float("inf"):
+            node.sum_cache = node.sum_cache + w[1]
+        c= w/sz
+        
+        node.log_p = torch.log_softmax(c/temperature,-1)
+        
 
 
 @dataclass
@@ -55,28 +133,6 @@ class BinaryNetworkTree:
             ls.extend(right_uid)
             raw_feats.extend(raw_f)
         return lsID, raw_feats, ls"""
-    @torch.no_grad()
-    def get_embeddable(self) -> Tuple[List[List[List[int]]], List[torch.Tensor], List[int]]:
-        stack = [self]
-        lsID = []
-        raw_feats = []
-        ls = []
-
-        while stack:
-            node = stack.pop(0)
-            li = node.leftNode.uid if node.leftNode else -1
-            ri = node.rightNode.uid if node.rightNode else -1
-            lsID.append([[li,ri]]) 
-            raw_feats.append(node.features)
-            ls.append(node.uid)
-
-            if node.leftNode is not None:
-                stack.insert(0,node.leftNode)
-
-            if node.rightNode is not None:
-                stack.insert(0,node.rightNode)
-        return lsID, raw_feats, ls
-
 
     def assign_embeddings(self, embeddings: torch.Tensor,values: torch.Tensor, uids: List[int], indices:List[int]) -> None:
         if self.leftNode is not None:
@@ -119,13 +175,6 @@ class BinaryNetworkTree:
         # in case we want to consider truncated paths?
         return torch.ones(1)
 
-    def traverse(self, fun):
-        fun(self)
-        if self.leftNode is not None:
-            self.leftNode.traverse(fun)
-        if self.rightNode is not None:
-            self.rightNode.traverse(fun)
-
     def sample(self) -> Tuple[List[str], BinaryNetworkTree,torch.Tensor]:
         if self.leftNode is None and self.rightNode is None:
             return [], self, torch.zeros(1, device=self.device)
@@ -147,11 +196,13 @@ class BinaryNetworkTree:
             log = ps[1].log()
             return ["r"]+path, node, log+logprob
 
-    def get_prob(self) -> Tuple[Dict[int,torch.Tensor],Dict[int,torch.Tensor]]:
+    def get_prob(self,open_nodes: List[int]|None= None) -> Tuple[Dict[int,torch.Tensor],Dict[int,torch.Tensor]]:
+        if open_nodes is not None and self.leftNode is None and self.rightNode is None and self.tree_id not in open_nodes:
+            return dict(),dict()
         dct = {self.tree_id: torch.zeros(1,device=self.device)}
         dct_v = {self.tree_id: self.value}
-        l, lv = self.leftNode.get_prob() if self.leftNode is not None else (dict(), dict())
-        r, rv = self.rightNode.get_prob() if self.rightNode is not None else (dict(), dict())
+        l, lv = self.leftNode.get_prob(open_nodes) if self.leftNode is not None else (dict(), dict())
+        r, rv = self.rightNode.get_prob(open_nodes) if self.rightNode is not None else (dict(), dict())
 
         l = {k:v + self.log_p[0] for k,v in l.items()} # type: ignore
         r = {k:v + self.log_p[1] for k,v in r.items()} # type: ignore
@@ -211,9 +262,9 @@ class BinaryNetworkTree:
             r = self.rightNode.sum_logprob(legal_ids)
             rsz = self.rightNode.size()+1
             self.rightNode.prepare_logprob(temperature, legal_ids)
-        if l is None and r is None:
-            l = self.weight
-            r = self.weight
+        # if l is None and r is None:
+        #    l = self.weight
+        #    r = self.weight
         if l is None:
             l = torch.ones(1,device=self.device)
         if r is None:
@@ -223,31 +274,31 @@ class BinaryNetworkTree:
     def sum_logprob(self, legal_ids:List[int]) -> torch.Tensor:
         if self.sum_cache is not None:
             return self.sum_cache
-        l = torch.zeros(1,).to(self.device)
-        r = torch.zeros(1,).to(self.device)
-        if self.leftNode is not None:
-            l = self.leftNode.sum_logprob(legal_ids)
-        if self.rightNode is not None:
-            r = self.rightNode.sum_logprob(legal_ids)
-        s=l+r+self.weight
+        # remove useless leaves
+        if self.rightNode is None and self.leftNode is None and self.tree_id not in legal_ids:
+            s = torch.tensor([-float("inf")],device=self.device)
+            self.sum_cache = s.to(self.device)
+            return s
+            
+        l = self.leftNode.sum_logprob(legal_ids) if self.leftNode else torch.zeros(1, device=self.device)
+        r = self.rightNode.sum_logprob(legal_ids) if self.rightNode else torch.zeros(1, device=self.device)
         if l == -float("inf"):
             s = r + self.weight
-        if r == -float("inf"):
+        elif r == -float("inf"):
             s = l + self.weight
-        if self.rightNode is None and self.leftNode is None:
-            if self.tree_id not in legal_ids:
-                s = torch.tensor([-float("inf")])
-        self.sum_cache = s.to(self.device)
-        return s.to(self.device)
+        else:
+            s=l+r+self.weight
+        self.sum_cache = s
+        return s
     
     def prune_closed_branches(self,open_nodes: List[int]) -> bool:
         if self.leftNode is not None:
             if self.leftNode.prune_closed_branches(open_nodes):
-                print("pruned successfully!")
+                #print("pruned successfully!")
                 self.leftNode = None            
         if self.rightNode is not None:
             if self.rightNode.prune_closed_branches(open_nodes):
-                print("pruned successfully!")
+                #print("pruned successfully!")
                 self.rightNode = None
         # now check if self is in open nodes
         if self.tree_id in open_nodes:
@@ -277,6 +328,7 @@ class BinaryNetworkTree:
         right_size = self.rightNode.size() if self.rightNode is not None else 0
         self.size_cache= left_size+right_size+1
         return self.size_cache
+    
     def set_device(self,device):
         self.device = device
         if self.leftNode is not None:
@@ -304,6 +356,17 @@ def from_dict(d: Dict[str, Any]) -> BinaryNetworkTree|None:
     tree.rightNode = from_dict(d["right"])
     return tree
     
+def tree_from_indices(tree:BinaryNetworkTree | None, indices:List[int]) -> BinaryNetworkTree | None:
+    if tree is None:
+        return None
+    new_tree = None
+    if tree.tree_id in indices:
+        new_tree = deepcopy(tree)
+        new_tree.leftNode = tree_from_indices(new_tree.leftNode, indices)
+        new_tree.rightNode = tree_from_indices(new_tree.rightNode, indices)
+    else:
+        return None
+
 
 
 class TreeBatch:
@@ -323,14 +386,14 @@ class TreeBatch:
         # this allows for splitting of the index space
         indices = _build_index_list(uids)
         for uid,ind,tree in zip(uids,indices,self.trees):
-            tree.assign_embeddings(embeddings,values, uid,ind)
+            assign_embeddings(tree, embeddings,values, uid,ind)
 
     def get_embeddable(self) -> Tuple[torch.Tensor,torch.Tensor, List[List[int]]]:
         id_map : List[np.ndarray] = []
         uids = []
         raw_feats = []
         for tree in self.trees:
-            i_map, r, id = tree.get_embeddable()
+            i_map, r, id = get_embeddable(tree)
             id_map.extend(i_map)
             uids.append(id)
             raw_feats.extend(r)
@@ -352,20 +415,23 @@ class TreeBatch:
     
     def embeddings(self, combineEmb:nn.Module, temperature, legal_ids : List[List[int]]):
         # make sure to reset all buffers before doing this:
-        #t = time()
+        t = time()
         self.reset_caches()
         id_map, raw_feats, uids = self.get_embeddable()
-        #print("got embeddables",time()-t)
-        #t = time()
+        print("got embeddables",time()-t)
+        t=time()
         uids_flat = torch.LongTensor([item for sublist in uids for item in sublist])
         comb,w,values = combineEmb(raw_feats.to(self.device), uids_flat.to(self.device), id_map.to(self.device))
+        print("embeddings done",time()-t)
         #print(comb.mean(), w.mean())
-        #print("NN time",time()-t)
         #self.assign_embeddings(comb, uids.copy(), FeatureType.combinedEmbedding,)
-        #t = time()
-        self.assign_embeddings(w,values,uids.copy())
-        #print("assign time",time()-t)
+        t = time()
+        self.assign_embeddings(w,values,uids)
+        print("assign time",time()-t)
+        t=time()
         self.prepare_logprob(temperature,legal_ids)
+        print("prepare_logprob time",time()-t)
+        
 
     def get_value(self,):
         t  = []
@@ -375,7 +441,7 @@ class TreeBatch:
 
     def prepare_logprob(self, temperature : float, legal_ids : List[List[int]]) -> None:
         for tree, l in zip(self.trees,legal_ids):
-            tree.prepare_logprob(temperature, l)
+            prepare_logprob(tree,temperature, l)
     
     def __len__(self) -> int:
         return len(self.trees)
@@ -402,18 +468,18 @@ class TreeBatch:
         return ls
 
     def get_logprob(self, ids: List[int], open_nodes : List[List[int]]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        out = []
+        out_log = []
         out_q = []
         out_v = []
         entropy = []
         for i,tree,o in zip(ids,self.trees, open_nodes):
             logit, q = tree.get_prob()
-            out.append(logit[i])
+            out_log.append(logit[i])
             l = torch.cat([l for k,l in logit.items() if k in o])
             entropy.append(-(l*l.exp()).sum())
             out_q.append(q[i])
             out_v.append(torch.max(torch.stack(list(q.values()))))
-        return torch.stack(out), torch.stack(out_q), torch.stack(out_v), torch.stack(entropy)
+        return torch.cat(out_log), torch.stack(out_q), torch.stack(out_v), torch.stack(entropy)
 
 if __name__ == '__main__':
     # torch.set_float32_matmul_precision('high')

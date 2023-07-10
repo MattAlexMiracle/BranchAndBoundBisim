@@ -39,7 +39,7 @@ def get_data(nodesel, model, baseline_gap=None, baseline_nodes=None):
         tmp=0
     text = f"""
     ================================================
-    Problemname: {model.getProbName()} {datetime.now().strftime("%H:%M:%S")}
+    Problemname: {model.getProbName()} {datetime.now().strftime("%H:%M:%S")} {model.getNNodes()}
            Baseline               NN
     GAP   {tmp*10}    {gap}
     Nodes {baseline_nodes}    {len(open_nodes)}
@@ -54,7 +54,7 @@ def get_data(nodesel, model, baseline_gap=None, baseline_nodes=None):
         n_nodes = n/(baseline_nodes + 1e-8) -1
         gap = 1*gap + (1-1)*n_nodes
     
-    rewards[-1] = 10*(rewards[-1] - np.clip(gap,-5,5))
+    rewards[-1] = 10*(rewards[-1] - np.clip(gap,-2,2))
     returns = get_returns(rewards,0.99)
     selecteds = nodesel.paths
     return open_nodes, returns, nodes, rewards, selecteds

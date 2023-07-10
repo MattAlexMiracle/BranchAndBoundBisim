@@ -6,3 +6,5 @@ figs/
 eval_data/
 training_data/
 training_data_bak/
+models/*
+tsplib_data/*

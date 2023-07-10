@@ -12,7 +12,7 @@ from copy import deepcopy
 from modules import CombineEmbedder
 import time
 from ray.util.multiprocessing import Pool
-#from torch.multiprocessing import Pool
+from torch.multiprocessing import Pool as mPool
 import ray
 from typing import List, Callable, Tuple
 import numpy as np
@@ -34,10 +34,11 @@ def launch_models(cfg : DictConfig, pool,NN: nn.Module, csv_info : pd.DataFrame,
     g = torch.Generator()
     arg_list = []
     csv_indices = []
+    indices = np.random.choice(len(csv_info),(num_proc,),replace=False)
     # NN_ref = ray.put(NN)
-    for it in range(num_proc):
+    for it,i in enumerate(indices):
         seed = g.seed()
-        i = int(torch.randint(0, len(csv_info), (1,)))
+        i = int(i)
         csv_indices.append(i)
         datum = csv_info.loc[i]
         arg_list.append((it,seed, NN, datum["name"],datum["gap"],datum["open_nodes"]))
@@ -174,9 +175,11 @@ def fit(cfg, NN,optim, open_nodes, returns, nodes, rewards, selecteds, mask):
                             nodes=batch, actions=act, mask=mask, rewards=rewards)
             ad_o = torch.tensor([adv[i] for i in idx],device=cfg.device)
         
-        loss = train_ppo(NN,optim,batch,data,o_logp,o_vs,cfg.training_scheme, mb_advantages=ad_o)
+        loss, kldiv = train_ppo(NN,optim,batch,data,o_logp,o_vs,cfg.training_scheme, mb_advantages=ad_o)
         batch.reset_caches()
         r.set_description(f"loss {loss}", True)
+        if kldiv > 0.03:
+            break
     del open_nodes, returns, nodes, rewards, selecteds, mask, batch
 
 def train(cfg: DictConfig, NN, optim):
@@ -202,9 +205,13 @@ def train(cfg: DictConfig, NN, optim):
             continue
         fit(cfg, NN, optim, open_nodes, returns, nodes, rewards, selecteds, mask)
         if it % 25 == 0:
+            torch.save({"weights": NN.state_dict(), "config": cfg}, f"models/model-{wandb.run.id}.pt")
             eval_model(pool,NN, df_eval)
 
     eval_model(pool,NN, df_eval)
+    torch.save({"weights": NN.state_dict(), "config": cfg}, f"models/model-{wandb.run.id}.pt")
+    pool.close()
+    pool.join()
 
 
 #if __name__ == "__main__":
@@ -214,7 +221,7 @@ def main(cfg: DictConfig):
     print(cfg)
     wandb.init(project="BnBBisim", config=OmegaConf.to_container(cfg))
     device = cfg.device
-    NN = CombineEmbedder(10+10+10, 512)
+    NN = CombineEmbedder(cfg.model.features, cfg.model.hidden_dim)
     NN.to(device)
     optim = torch.optim.AdamW(NN.parameters(), cfg.optimization.lr)
     print(f"""

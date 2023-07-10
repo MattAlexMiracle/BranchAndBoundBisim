@@ -29,10 +29,29 @@ def generate_test_data(seed):
     return f"model-{seed}.cip"
 
 
+class Wrapper:
+    def __init__(self, tspobj):
+        self.tspobj = tspobj
+        self.nodes = list(tspobj.get_nodes())
+    def __getitem__(self, key):
+        if isinstance(key,tuple):
+
+            key = self.nodes[key[0]], self.nodes[key[1]]
+            i= self.tspobj.get_weight(*key)
+            return i
+        elif isinstance(key, int):
+            return [self.tspobj.get_weight(key,i) for i in range(self.tspobj.dimension)]
+    @property
+    def shape(self):
+        return (self.tspobj.dimension, self.tspobj.dimension)
+
+
 def make_tsplib(location:str):
     problem = tsplib.load(location)
     size = problem.dimension
-    ds=np.array([problem.get_weight(*i) for i in problem.get_edges()]).reshape(size,size)
+    ds= Wrapper(problem)#np.array([problem.get_weight(*i) for i in problem.get_edges()]).reshape(size,size)
+    if size > 1_000:
+        return None
     return make_tsp(distances=ds)
 
 def make_tsp(seed=None, distances=None):
@@ -81,7 +100,7 @@ def make_tsp(seed=None, distances=None):
     
 
     # Define objective
-    model.setObjective(scip.quicksum(dist_matrix[i,j] * x[i,j] for i in range(num_cities) for j in range(num_cities) if j != i), sense="minimize")
+    model.setObjective(scip.quicksum(dist_matrix[i,j] * x[i,j] for i in range(num_cities) for j in range(num_cities) if i!=j), sense="minimize")
     if seed is not None:
         model.writeProblem(f"model-{seed}.cip")
     return model

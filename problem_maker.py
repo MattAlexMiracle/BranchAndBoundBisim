@@ -11,31 +11,33 @@ def make_dataset(functions, number_of_instances, folder_name):
     for f in functions:
         buffer = []
         gap = []
-        for i in range(5):
-            model = f()
-            model.setRealParam("limits/time", 45)
-            model.optimize()
-            buffer.append(model)
-            gap.append(model.getGap())
+        #for i in range(5):
+        #    model = f()
+        #    model.setRealParam("limits/time", 45)
+        #    model.optimize()
+        #    buffer.append(model)
+        #    gap.append(model.getGap())
         for i in range(number_of_instances):
             accept = False
-            for i in range(3):
+            for _ in range(15):
                 model = f()
                 model.setRealParam("limits/time", 45)
                 model.optimize()
-                buffer.append(model)
-                gap.append(model.getGap())
-            # now get the medoid
-            gap_a = np.array(gap)
-            medoid = np.argmin(np.abs(gap_a - gap_a[:,None]).sum(axis=0)) # type: ignore
-            model = buffer.pop(medoid)
-            gap.pop(medoid)
-            model.writeProblem(f"{folder_name}/data/model-{f.__name__}-{i}.cip")
-            if 10.00 < model.getGap():
-                print("gap too large, rerunning")
-                continue
-            d = {"gap":model.getGap(), "time" : 45, "type":f.__name__, "index":i, "name":f"{folder_name}/data/model-{f.__name__}-{i}.cip", "open_nodes":sum([len(x) for x in model.getOpenNodes()])}
-            data.append(d)
+                #    buffer.append(model)
+                #    gap.append(model.getGap())
+                # now get the medoid
+                #gap_a = np.array(gap)
+                #medoid = np.argmin(np.abs(gap_a - gap_a[:,None]).sum(axis=0)) # type: ignore
+                #model = buffer.pop(medoid)
+                #gap.pop(medoid)
+                model.writeProblem(f"{folder_name}/data/model-{f.__name__}-{i}.cip")
+                #if 10.00 < model.getGap():
+                #    print("gap too large, rerunning")
+                #    continue
+                if 0.05 < model.getGap() < 1.0:
+                    d = {"gap":model.getGap(), "time" : 45, "type":f.__name__, "index":i, "name":f"{folder_name}/data/model-{f.__name__}-{i}.cip", "open_nodes":sum([len(x) for x in model.getOpenNodes()])}
+                    data.append(d)
+                    break
     df = pd.DataFrame(data)
     df.to_csv(f"{folder_name}/info.csv")
     return df

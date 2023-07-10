@@ -54,6 +54,7 @@ def compute_advantage(returns, vs):
 
 @torch.inference_mode()
 def get_old_data(conf, NN_old: nn.Module, batch: TreeBatch, data: NodeData):
+    NN_old.eval()
     # with torch.autocast("cuda"):
     old_logprob, old_qs, old_vs, entropy_old = [],[],[],[]
     for idx,b in enumerate(batch):
@@ -72,6 +73,7 @@ def get_old_data(conf, NN_old: nn.Module, batch: TreeBatch, data: NodeData):
     adv = advantages_from_list(
         data.rewards, old_vs, data.mask, conf.env.decay, conf.optimization.gae)
     batch.reset_caches()
+    NN_old.train()
     return old_logprob, old_qs, old_vs, entropy_old, adv
 
 
@@ -82,8 +84,12 @@ def train_ppo(NN: nn.Module, optimizer: torch.optim.Optimizer, batch: TreeBatch,
     batch.embeddings(NN, 1.0, data.open_nodes)
 
     logprob, qs, vs, entropy = batch.get_logprob(data.actions, data.open_nodes)
+
     logratio = logprob - old_logprob.detach()
     ratio = logratio.exp()
+    print("old_vs", old_vs.shape, "vs", vs.shape, "logratio",ratio.mean(), "±", ratio.std())
+
+
 
     with torch.no_grad():
         # calculate approx_kl http://joschu.net/blog/kl-approx.html
@@ -125,13 +131,13 @@ def train_ppo(NN: nn.Module, optimizer: torch.optim.Optimizer, batch: TreeBatch,
                "pg_loss" : pg_loss.detach().item(),
                "mean ratio": ratio.mean().detach().item()
                })
-    if approx_kl > 50:
+    if approx_kl > 0.03:
         print("emergency skip due to large kl-div", approx_kl)
         optimizer.zero_grad()
-        return loss.detach().item()
+        return loss.detach().item(), approx_kl.detach().item()
     optimizer.zero_grad()
     loss.backward()
     nn.utils.clip_grad_norm_(NN.parameters(), conf.max_grad_norm)
     optimizer.step()
     optimizer.zero_grad()
-    return loss.detach().cpu().item()
+    return loss.detach().cpu().item(), approx_kl.detach().item()
