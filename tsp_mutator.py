@@ -222,12 +222,12 @@ def mutator_add_col(coords, std=(1,50),mu=(-10,10)):
     print(coords.shape)
     return coords
 
-muts = [mutator_axisprojection,mutator_cluster,mutator_expansion,mutator_linear_projection,mutator_implosion]
+muts = [mutator_implosion, mutator_cluster, mutator_expansion, mutator_axisprojection,mutator_linear_projection]
 
 def do_mutation(coords, funs=muts, n_muts=15):
     idx = np.random.choice(len(funs),size=n_muts,replace=True)
-    for i in idx:
-        coords = funs[i](coords)
+    #for i in idx:
+    #    coords = funs[i](coords)
     for f in funs:
         coords = f(coords)
     return coords

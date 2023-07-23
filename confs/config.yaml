@@ -11,6 +11,7 @@ optimization:
 model:
   features: 30
   hidden_dim : 512
+  depth: 2
 
 env:
   num_steps: 50

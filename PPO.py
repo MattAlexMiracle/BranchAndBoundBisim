@@ -87,7 +87,7 @@ def train_ppo(NN: nn.Module, optimizer: torch.optim.Optimizer, batch: TreeBatch,
 
     logratio = logprob - old_logprob.detach()
     ratio = logratio.exp()
-    print("old_vs", old_vs.shape, "vs", vs.shape, "logratio",ratio.mean(), "±", ratio.std())
+    print("old_vs", old_vs.mean(), "vs", vs.mean(), "logratio",ratio.mean(), "±", ratio.std(), entropy.mean())
 
 
 

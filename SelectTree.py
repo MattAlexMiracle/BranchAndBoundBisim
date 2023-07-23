@@ -1,12 +1,12 @@
 from pyscipopt import Nodesel
 import pyscipopt
 import torch
-from Tree import BinaryNetworkTree, TreeBatch, to_dict, from_dict
+from Tree import BinaryNetworkTree, TreeBatch, to_dict, get_prob, add_node
 from copy import deepcopy
+from numba import njit
 from pyscipopt import Model
-from modules import CombineEmbedder
 from time import sleep, time
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Tuple
 import numpy as np
 import sys
 
@@ -14,19 +14,38 @@ def sample_open_nodes(nodes,logits :Dict[int,torch.Tensor]):
     ids : List[int] = [node.getNumber() for node in nodes]
     #print(ids)
     relevant_logits = sorted((k,v) for k,v in logits.items() if k in ids)
-    just_logits = torch.cat([x[1] for x in relevant_logits])
+    just_logits = torch.stack([x[1] for x in relevant_logits])
     sampled = torch.distributions.Categorical(logits=just_logits).sample()
     chosen, chosen_logit = relevant_logits[sampled]
     # print("chose node", chosen, "with log-likelihood", chosen_logit, "from", just_logits.exp().sum())
     for node in nodes:
         if node.getNumber() == chosen:
             return node
-        
-def powernorm(val : np.ndarray, power : float):
-    return np.sign(val) * (abs(val)**power)
 
+@njit        
+def powernorm(val : np.ndarray, power : float):
+    return np.sign(val) * (np.abs(val)**power)
+
+@njit
 def signed_log(val : np.ndarray):
-    return np.sign(val) * (np.log(abs(val)+1e-3))
+    return np.sign(val) * (np.log(np.abs(val)+1e-3))
+
+@njit
+def make_data(vars, slack_cons):
+    vars = np.abs(vars  - np.floor(vars))
+    slack_cons = np.append(slack_cons[~np.isnan(slack_cons)],0)
+    vars = vars[~np.isnan(vars)]
+
+    slack_cons = signed_log(slack_cons[np.logical_and(slack_cons<10**10, slack_cons>-10**10)])
+
+    # range=(0,1.0), no range
+    slack_hist = np.histogram(slack_cons, 10,range=(np.min(slack_cons), np.max(slack_cons)+1e-8))[0]
+    slack_hist = slack_hist/(slack_hist.sum()+1e-8)
+    frac_mean = np.mean(vars)
+    hist = np.histogram(vars[vars!=0],10,range=(0,1.0))[0]
+    var_hist = hist/(hist.sum()+1e-8)
+    already_integral = np.isclose(vars,0).mean()
+    return slack_hist, var_hist, frac_mean, already_integral
 
 
 def get_model_info(model,power=0.5):
@@ -34,26 +53,23 @@ def get_model_info(model,power=0.5):
     Nsepa = powernorm(model.getNSepaRounds(),power)
     gap = model.getGap()
     # node properties
-    p = []
-    n=0
-    vs = model.getVars()
-    for v in vs:
-        if v.vtype() in ["BINARY", "INTEGER", "IMPLINT"]:
-            n+=1
-            sol = v.getLPSol()
-            p += [abs(sol  - np.floor(sol))]
-    p = np.array(p).reshape(-1)
-    frac_mean = np.mean(p)
-    #frac_std = np.std(p)
-    #frac_max = np.max(p)
-    #frac_min = np.min(np.concatenate([p[p!=0],np.array([1.0])]))
-    hist = np.histogram(np.concatenate([p[p!=0],np.array([1.0])]),10,range=(0,1.0), density=True)[0]
-    hist = hist/hist.sum()
+    #t0 = time()
+    vars = [v.getLPSol() for v in model.getVars() if v.vtype() in ["BINARY", "INTEGER", "IMPLINT"]]
+    #n=0
+    #vs = 
+    slack_cons = [model.getSlack(c) for c in model.getConss() if c.isLinear()]
+    #print("iterated",time()-t0)
+
+    
     # you have to be careful with using isclose for values close to zero
     # because atol can give false positives. In this case we accept this here
-    already_integral = np.isclose(np.array(p),0).mean()
     cond = np.log10(model.getCondition())
     lpi = powernorm(model.lpiGetIterations(),power)
+    slack_cons = np.array(slack_cons)
+    vars = np.array(vars).reshape(-1)
+
+    slack_hist, var_hist, frac_mean, already_integral = make_data(vars, slack_cons)
+
     info = {
             "NcutsApp":NcutsApp,
             "Nsepa":Nsepa,
@@ -66,11 +82,16 @@ def get_model_info(model,power=0.5):
             #"min to integral": frac_min,
             "already_integral": already_integral
         }
-    #print(info,hist)
 
-    return info, hist
+    return info, var_hist, slack_hist
 
-
+def num_in_range(ranges:List[Tuple[int,int]], mod:List[int]):
+    def f(n:int) -> int:
+        for idx, (r1,r2) in enumerate(ranges):
+            if r1 <= n <= r2:
+                return mod[idx]
+        return 2**32
+    return f
 
 class CustomNodeSelector(Nodesel):
     def __init__(self, comb_model, device :str, temperature :float):
@@ -88,9 +109,13 @@ class CustomNodeSelector(Nodesel):
         self.added_ids = set()
         self.logit_lookup = dict()
         self.temperature = temperature
+        self.step = 0
+        self.mods = num_in_range([(0,10), (10,100),(100,1000),(1000,10_000), (10_000,2**32)],[1,5,10,100,1000])
     
-    def get_tree(self, node, info : Dict[str, Any], hist: np.ndarray,power=0.5):
+    def get_tree(self, node, info : Dict[str, Any], var_hist: np.ndarray, slack_hist : np.ndarray,power=0.5):
+        #t0 = time()
         self.added_ids.add(node.getNumber())
+        #print("Node id", node.getNumber())
         tmp =  node.getDomchg()
         dmch = np.array([x.getNewBound() for x in tmp.getBoundchgs()] if tmp is not None else 0.0).astype(float)
         expDomch = powernorm(dmch.mean(),power)
@@ -98,38 +123,35 @@ class CustomNodeSelector(Nodesel):
         info["expDomch"] = expDomch
         info["depth_normed"] = depth
         info["n_AddedConss"] = powernorm(node.getNAddedConss(),power)
-        slack_cons = []
-        for c in self.model.getConss():
-            if c.isLinear():
-                slack_cons.append(self.model.getSlack(c))
-        slack_cons = np.array(slack_cons)
-        slack_cons = signed_log(slack_cons[np.logical_and(slack_cons<10**20, slack_cons>-10**20)])
-        # range=(0,1.0), no range
-        slack_hist = np.histogram(np.concatenate([slack_cons,np.array([1.0])]),10,density=True)[0]
-        slack_hist = slack_hist/slack_hist.sum()
+
         
-        features = torch.from_numpy(np.array(list(info.values())+ hist.tolist()+slack_hist.tolist()).clip(-10,10)).detach().half()
+        features = torch.tensor(list(info.values())+ var_hist.tolist()+slack_hist.tolist()).clamp(-10,10).detach().half()
+        #print("info var slack",list(info.values()),var_hist.tolist(),slack_hist.tolist())
         new_node = BinaryNetworkTree(leftNode=None,
                 rightNode=None,
                 features=features,#torch.ones(128),
                 info=dict(),#info,
                 value=torch.zeros(1,device=self.device),
-                log_p=torch.zeros(2,device=self.device),
+                log_p=None, #torch.zeros(2,device=self.device),
                 uid=0,
                 tree_id=node.getNumber(),
                 weight=torch.zeros(1,device=self.device),
                 device=self.device
                 )
+        #print("constructed features and node", time()-t0)
         if node.getNumber() != 1:
             p = node.getParent().getNumber()
-            self.tree.add_node(new_node, p) # type: ignore
+            #t0 = time()
+            add_node(self.tree, new_node, p) # type: ignore
+            #print("appened tree", time()-t0)
         else:
             self.tree = new_node
 
     @torch.inference_mode()
     def nodeselect(self):
-        t=time()
-        t0=time()
+        self.step+=1
+        #t=time()
+        #t0=time()
         self.comb_model.eval()
         leaves, children, siblings = self.model.getOpenNodes()
         open_nodes = set(leaves + children + siblings)
@@ -141,33 +163,40 @@ class CustomNodeSelector(Nodesel):
             print("dumb selection")
             return {"selnode":self.model.getBestboundNode()}
         power=0.5
-        info,hist = get_model_info(self.model,power=power)
+        info,var_hist, slack_hist = get_model_info(self.model,power=power)
         for c in nodes:
-            self.get_tree(c,info,hist,power=power)
-        print("make features", time()-t0)
+            self.get_tree(c,info,var_hist, slack_hist,power=power)
+        if self.step % self.mods(self.step) != 0:
+            t = self.model.getBestChild()
+            if t is not None:
+                # first try to work on the selected subtree
+                return {"selnode":t}
+            # if the subtree is solved, continue with the best bound node
+            return {"selnode":self.model.getBestboundNode()}
+        open_node_ids = [n.getNumber() for n in open_nodes]
+        self.tree.prune_closed_branches(open_node_ids)
+        
+        
+        #print("make features", time()-t0,len(open_nodes))
         #t0 = time()
         trees = TreeBatch([self.tree],self.device) # type: ignore
         #self.comb_model.eval()
-        open_node_ids = [n.getNumber() for n in open_nodes]
         trees.embeddings(self.comb_model,self.temperature,[open_node_ids])
         # self.comb_model.train()
         #print("Time taken", time()-t0,"newly added nodes",len(nodes))
-        tmp, _ = trees[0].get_prob([open_node_ids])
-        t0 = time()
+        #t0 = time()
+        tmp, _ = get_prob(trees[0],open_node_ids)
         self.logit_lookup = tmp #{k:v.cpu() for k,v in tmp.items()}
         node = sample_open_nodes(open_nodes,self.logit_lookup)
         self.paths.append(node.getNumber()) # type: ignore
         self.gaps.append(np.clip(self.model.getGap(),-10,10))
         self.open_nodes.append(open_node_ids)
-        
-        sz = self.tree.size()
+        #print("Time taken for prob", time()-t0,)        
         trees.reset_caches()
         self.nodes.append(to_dict(self.tree))
         # now cleanup the tree??
-        if sz >100:
-            self.tree.prune_closed_branches(open_node_ids)
-        print("Time taken for prob", time()-t0,)
-        print("total time",time()-t)
+
+        #print("total time",time()-t, sz)
         return {"selnode": node}
     
     def nodecomp(self, node1, node2):
@@ -175,7 +204,8 @@ class CustomNodeSelector(Nodesel):
         #n2 = node2.getNumber()
         #p1 = self.logit_lookup # type: ignore
         #p = p1[n1].exp() / (p1[n1].exp() + p1[n2].exp())
-        return -1 if torch.rand(1) < 0.5 else 1
+        return -1 if node1.getLowerbound() <= node2.getLowerbound() else 1
+        #return -1 if torch.rand(1) < 0.5 else 1
 
 
 def get_size(obj, seen=None):

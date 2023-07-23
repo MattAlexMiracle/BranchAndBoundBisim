@@ -50,7 +50,7 @@ def make_tsplib(location:str):
     problem = tsplib.load(location)
     size = problem.dimension
     ds= Wrapper(problem)#np.array([problem.get_weight(*i) for i in problem.get_edges()]).reshape(size,size)
-    if size > 1_000:
+    if size >= 1_000:
         return None
     return make_tsp(distances=ds)
 
@@ -64,7 +64,7 @@ def make_tsp(seed=None, distances=None):
     # Define a distance matrix for the cities
     dist_matrix = distances
     if distances is None:
-        size = 75
+        size = np.random.randint(75,200)
         d = do_mutation(powernorm(torch.randn(size,2,)*size,0.5).numpy())
         y = np.random.rand(size,size)
         random_offset = y-np.diag(y)*np.eye(len(y))

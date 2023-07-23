@@ -2,11 +2,10 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from typing import Optional, Tuple, List, Dict, Any, Callable
-from numba import njit, int32
+from numba import njit, int32, jit
 from numba.typed import List
 from numba.core.errors import NumbaDeprecationWarning, NumbaPendingDeprecationWarning
 import warnings#
-from time import time
 
 warnings.simplefilter('ignore', category=NumbaDeprecationWarning)
 warnings.simplefilter('ignore', category=NumbaPendingDeprecationWarning)
@@ -39,19 +38,41 @@ class WhitenTransform(nn.Module):
         #print(chol)
         return torch.mm((x-self.mean),chol)
 
+@torch.jit.script
+def normfun(x, mean, std):
+    return (x-mean) / (std+0.001), x.mean(0), x.std(0)
+
+@torch.jit.script
+def swiglu(x):
+    x, gate = x.chunk(2, dim=-1)
+    return F.silu(gate) * x
+
+
+class SlowNorm(nn.Module):
+    def __init__(self,features,factor=0.05):
+        super().__init__()
+        self.register_buffer("std",torch.ones(features))
+        #self.mean = torch.zeros(size)
+        self.register_buffer("mean",torch.zeros(features))
+        self.factor = factor
+    def forward(self,x):
+        x, mu_new, std_new = normfun(x,self.mean,self.std)
+        with torch.no_grad():
+            if self.training:
+                self.mean = (1-self.factor)*self.mean + self.factor*mu_new
+                self.std = (1-self.factor)*self.std + self.factor*std_new
+        return x
+
 
 class FeatureEmbedder(nn.Module):
     def __init__(self, feature_in, feature_embed_out: int ,n_layers:int = 1, scale=0.5):
         super().__init__()
         self.embd = nn.Sequential(
-            nn.BatchNorm1d(feature_in,affine=False),
+            #nn.BatchNorm1d(feature_in,affine=False),
+            SlowNorm(feature_in),
             #WhitenTransform(feature_in),
             nn.Linear(feature_in, feature_embed_out),
-            #nn.LeakyReLU(),
-            #nn.Linear(feature_embed_out, feature_embed_out),
-            #nn.LayerNorm(feature_embed_out),
-            #nn.BatchNorm1d(feature_embed_out),
-        )
+            )
         layers = []
         
         for i in range(n_layers):
@@ -94,8 +115,7 @@ def mapping(probs, steps):
 
 class SwiGLU(nn.Module):
     def forward(self, x):
-        x, gate = x.chunk(2, dim=-1)
-        return F.silu(gate) * x
+        return swiglu(x)
 
 @njit(parallel=True)
 def transform_ind(label ,neighbors):
@@ -131,6 +151,8 @@ def init_ortho(x : nn.Module):
         torch.nn.init.orthogonal_(x.weight,)
         if x.bias is not None:
             torch.nn.init.constant_(x.bias, 0)
+
+
 class CombineEmbedder(nn.Module):
     def __init__(self,feat_emb_sz:int, node_emb_sz: int, scale_features = 0.5, depth = 2):
         super().__init__()
@@ -141,12 +163,9 @@ class CombineEmbedder(nn.Module):
         #                          nn.BatchNorm1d(node_emb_sz)
         #                          )
         self.node_emb = nn.Sequential(
-            #nn.LayerNorm(node_emb_sz),
-            (nn.Linear(node_emb_sz,2*node_emb_sz)),
+            #nn.LayerNorm(node_emb_sz,elementwise_affine=False),
+            nn.Linear(node_emb_sz,2*node_emb_sz),
             SwiGLU(),
-            #nn.LeakyReLU(),
-            #(nn.Linear(node_emb_sz,node_emb_sz)),
-            #nn.LeakyReLU(),
             )
         self.depth = depth
         self.scale_features = scale_features
@@ -157,7 +176,7 @@ class CombineEmbedder(nn.Module):
             #nn.Linear(node_emb_sz,node_emb_sz),
             #SwiGLU(),
             #nn.LeakyReLU(),
-            nn.Linear(self.node_emb_sz,1,),
+            nn.Linear(self.node_emb_sz,1,bias=False),
             #nn.Tanh()
         )
         self.value_head = nn.Sequential(
@@ -166,7 +185,7 @@ class CombineEmbedder(nn.Module):
             #nn.Linear(node_emb_sz,node_emb_sz),
             #SwiGLU(),
             #nn.LeakyReLU(),
-            nn.Linear(node_emb_sz,1, ),
+            nn.Linear(node_emb_sz,1, bias=False),
             #nn.Tanh()
         )
         t = np.geomspace(0.01,10.0,64)
@@ -185,12 +204,12 @@ class CombineEmbedder(nn.Module):
         #raws = raw_feats[indices_sorted]
         #id_map = id_map[indices_sorted]
         #sorted_feats = torch.cat([raws, torch.zeros((1,self.feat_emb_sz), device=raw_feats.device)])
-        extended_feats = torch.cat([raw_feats, torch.zeros((1,self.feat_emb_sz), device=raw_feats.device)])
-        sorted_feats = extended_feats
-        #print(uids)
+        
+        sorted_feats = torch.cat([raw_feats, torch.zeros((1,self.feat_emb_sz), device=raw_feats.device)])
         uids = torch.cat([uids, torch.ones(1,dtype=int)*(-1)])
         # now embedd them:
         sorted_feats = self.feat_emb(sorted_feats)
+        #print("raw and embedded feats",raw_feats.mean(), sorted_feats.mean())
         
         # this is also used for the fixed input features, but not with the extra "no neighbor" feature
         # inital_feat = sorted_feats[:-1].clone()
