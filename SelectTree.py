@@ -9,6 +9,8 @@ from time import sleep, time
 from typing import Dict, List, Any, Tuple
 import numpy as np
 import sys
+from TreeList import Parent_Feature_Map, TreeList, add_parent_map, prune_elements
+# from feature_extractor import get_model_info
 
 def sample_open_nodes(nodes,logits :Dict[int,torch.Tensor]):
     ids : List[int] = [node.getNumber() for node in nodes]
@@ -22,25 +24,26 @@ def sample_open_nodes(nodes,logits :Dict[int,torch.Tensor]):
         if node.getNumber() == chosen:
             return node
 
-@njit        
+@njit(cache=True)        
 def powernorm(val : np.ndarray, power : float):
     return np.sign(val) * (np.abs(val)**power)
 
-@njit
+@njit(cache=True)
 def signed_log(val : np.ndarray):
     return np.sign(val) * (np.log(np.abs(val)+1e-3))
 
-@njit
+@njit(cache=True)
 def make_data(vars, slack_cons):
     vars = np.abs(vars  - np.floor(vars))
-    slack_cons = np.append(slack_cons[~np.isnan(slack_cons)],0)
+    #slack_cons = np.append(slack_cons[~np.isnan(slack_cons)],0)
     vars = vars[~np.isnan(vars)]
 
-    slack_cons = signed_log(slack_cons[np.logical_and(slack_cons<10**10, slack_cons>-10**10)])
+    #slack_cons = signed_log(slack_cons[np.logical_and(slack_cons<10**10, slack_cons>-10**10)])
 
     # range=(0,1.0), no range
-    slack_hist = np.histogram(slack_cons, 10,range=(np.min(slack_cons), np.max(slack_cons)+1e-8))[0]
-    slack_hist = slack_hist/(slack_hist.sum()+1e-8)
+    slack_hist = None
+    #slack_hist = np.histogram(slack_cons, 10,range=(np.min(slack_cons), np.max(slack_cons)+1e-8))[0]
+    #slack_hist = slack_hist/(slack_hist.sum()+1e-8)
     frac_mean = np.mean(vars)
     hist = np.histogram(vars[vars!=0],10,range=(0,1.0))[0]
     var_hist = hist/(hist.sum()+1e-8)
@@ -49,27 +52,28 @@ def make_data(vars, slack_cons):
 
 
 def get_model_info(model,power=0.5):
-    NcutsApp = powernorm(model.getNCutsApplied(),power)
-    Nsepa = powernorm(model.getNSepaRounds(),power)
+    NcutsApp = model.getNCutsApplied()
+    Nsepa = model.getNSepaRounds()
     gap = model.getGap()
     # node properties
     #t0 = time()
+    #  
     vars = [v.getLPSol() for v in model.getVars() if v.vtype() in ["BINARY", "INTEGER", "IMPLINT"]]
-    #n=0
-    #vs = 
-    slack_cons = [model.getSlack(c) for c in model.getConss() if c.isLinear()]
     #print("iterated",time()-t0)
+    #t0=time()
+    #slack_cons = [model.getSlack(c) for c in model.getConss() if c.isOriginal() and c.isActive() and c.isLinear()]
+    #print("slack",time()-t0)
 
     
     # you have to be careful with using isclose for values close to zero
     # because atol can give false positives. In this case we accept this here
-    cond = np.log10(model.getCondition())
-    lpi = powernorm(model.lpiGetIterations(),power)
-    slack_cons = np.array(slack_cons)
     vars = np.array(vars).reshape(-1)
-
-    slack_hist, var_hist, frac_mean, already_integral = make_data(vars, slack_cons)
-
+    #slack_cons = np.array(slack_cons)
+    #t0 = time()
+    slack_hist, var_hist, frac_mean, already_integral = make_data(vars, None)
+    cond = np.log10(model.getCondition())
+    lpi = model.lpiGetIterations()
+    
     info = {
             "NcutsApp":NcutsApp,
             "Nsepa":Nsepa,
@@ -82,7 +86,7 @@ def get_model_info(model,power=0.5):
             #"min to integral": frac_min,
             "already_integral": already_integral
         }
-
+    #print("histograms", time()-t0)
     return info, var_hist, slack_hist
 
 def num_in_range(ranges:List[Tuple[int,int]], mod:List[int]):
@@ -100,17 +104,17 @@ class CustomNodeSelector(Nodesel):
         self.sel_counter = 0
         self.comp_counter = 0
         self.device = device
-        self.tree : BinaryNetworkTree | None = None
+        self.tree : Parent_Feature_Map | None = None
         self.paths = []
         self.nodes = []
         self.open_nodes = []
         self.gaps = []
 
         self.added_ids = set()
-        self.logit_lookup = dict()
+        self.logit_lookup = torch.zeros(1)
         self.temperature = temperature
         self.step = 0
-        self.mods = num_in_range([(0,10), (10,100),(100,1000),(1000,10_000), (10_000,2**32)],[1,5,10,100,1000])
+        self.mods = num_in_range([(0,100), (100,1000)],[1,10])
     
     def get_tree(self, node, info : Dict[str, Any], var_hist: np.ndarray, slack_hist : np.ndarray,power=0.5):
         #t0 = time()
@@ -118,39 +122,47 @@ class CustomNodeSelector(Nodesel):
         #print("Node id", node.getNumber())
         tmp =  node.getDomchg()
         dmch = np.array([x.getNewBound() for x in tmp.getBoundchgs()] if tmp is not None else 0.0).astype(float)
-        expDomch = powernorm(dmch.mean(),power)
-        depth = powernorm(node.getDepth()/(self.model.getNNodes()+1),power)
+        expDomch = dmch.mean()
+        depth = node.getDepth()/(self.model.getNNodes()+1)
         info["expDomch"] = expDomch
         info["depth_normed"] = depth
-        info["n_AddedConss"] = powernorm(node.getNAddedConss(),power)
+        info["n_AddedConss"] = node.getNAddedConss()
 
         
-        features = torch.tensor(list(info.values())+ var_hist.tolist()+slack_hist.tolist()).clamp(-10,10).detach().half()
+        features = torch.tensor(list(info.values())+ var_hist.tolist()).clamp(-10,10)#+slack_hist.tolist()).clamp(-10,10)
         #print("info var slack",list(info.values()),var_hist.tolist(),slack_hist.tolist())
-        new_node = BinaryNetworkTree(leftNode=None,
-                rightNode=None,
-                features=features,#torch.ones(128),
-                info=dict(),#info,
-                value=torch.zeros(1,device=self.device),
-                log_p=None, #torch.zeros(2,device=self.device),
-                uid=0,
-                tree_id=node.getNumber(),
-                weight=torch.zeros(1,device=self.device),
-                device=self.device
-                )
         #print("constructed features and node", time()-t0)
         if node.getNumber() != 1:
-            p = node.getParent().getNumber()
+            pid = node.getParent().getNumber()
             #t0 = time()
-            add_node(self.tree, new_node, p) # type: ignore
-            #print("appened tree", time()-t0)
+            #add_node(self.tree, new_node, p) # type: ignore
+            self.tree = add_parent_map(self.tree, 0, node.getNumber(),pid, features.unsqueeze(0))
+            """self.tree = Parent_Feature_Map(
+                uids=np.zeros((1,1)),
+                tree_ids=np.ones((1,1))*node.getNumber(),
+                parent_ids=np.ones((1,1))*(-1),
+                features=features.reshape(1,-1),
+            )"""
         else:
-            self.tree = new_node
+            self.tree = Parent_Feature_Map(
+                uids=[0],
+                tree_ids=[node.getNumber()],
+                parent_ids=[-1],
+                features=[features.reshape(1,-1)],
+            )
 
     @torch.inference_mode()
     def nodeselect(self):
         self.step+=1
-        #t=time()
+        if self.step>=750:
+            #t = self.model.getBestChild()
+            #if t is not None:
+                # first try to work on the selected subtree
+            #    return {"selnode":t}
+            # if the subtree is solved, continue with the best bound node
+            return {"selnode":self.model.getBestboundNode()}
+            
+        t=time()
         #t0=time()
         self.comb_model.eval()
         leaves, children, siblings = self.model.getOpenNodes()
@@ -164,39 +176,43 @@ class CustomNodeSelector(Nodesel):
             return {"selnode":self.model.getBestboundNode()}
         power=0.5
         info,var_hist, slack_hist = get_model_info(self.model,power=power)
+        #print("make features", time()-t0,len(open_nodes))
         for c in nodes:
             self.get_tree(c,info,var_hist, slack_hist,power=power)
+        
         if self.step % self.mods(self.step) != 0:
-            t = self.model.getBestChild()
-            if t is not None:
-                # first try to work on the selected subtree
-                return {"selnode":t}
+            #t = self.model.getBestChild()
+            #if t is not None:
+            #    # first try to work on the selected subtree
+            #    return {"selnode":t}
             # if the subtree is solved, continue with the best bound node
             return {"selnode":self.model.getBestboundNode()}
+        #print("features",time()-t0)
         open_node_ids = [n.getNumber() for n in open_nodes]
-        self.tree.prune_closed_branches(open_node_ids)
+        if self.step % 50 == 0:
+            prune_elements(self.tree,open_node_ids)
+        #self.tree.prune_closed_branches(open_node_ids)
         
         
-        #print("make features", time()-t0,len(open_nodes))
         #t0 = time()
-        trees = TreeBatch([self.tree],self.device) # type: ignore
+        trees = TreeList([self.tree]) # type: ignore
         #self.comb_model.eval()
-        trees.embeddings(self.comb_model,self.temperature,[open_node_ids])
+        pds, _, _ = trees.get_prob(self.comb_model,[open_node_ids])
         # self.comb_model.train()
         #print("Time taken", time()-t0,"newly added nodes",len(nodes))
         #t0 = time()
-        tmp, _ = get_prob(trees[0],open_node_ids)
-        self.logit_lookup = tmp #{k:v.cpu() for k,v in tmp.items()}
+        #tmp, _ = get_prob(trees[0],open_node_ids)
+        self.logit_lookup = pds[0] #{k:v.cpu() for k,v in tmp.items()}
         node = sample_open_nodes(open_nodes,self.logit_lookup)
         self.paths.append(node.getNumber()) # type: ignore
         self.gaps.append(np.clip(self.model.getGap(),-10,10))
         self.open_nodes.append(open_node_ids)
         #print("Time taken for prob", time()-t0,)        
-        trees.reset_caches()
-        self.nodes.append(to_dict(self.tree))
+        #trees.reset_caches()
+        self.nodes.append(deepcopy(self.tree))
         # now cleanup the tree??
 
-        #print("total time",time()-t, sz)
+        print("total time",time()-t)
         return {"selnode": node}
     
     def nodecomp(self, node1, node2):

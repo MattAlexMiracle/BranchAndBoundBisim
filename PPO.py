@@ -3,6 +3,7 @@ import numpy as np
 import torch
 from torch import nn
 from SelectTree import TreeBatch
+from TreeList import TreeList
 from utils import NodeData
 import wandb
 
@@ -53,41 +54,38 @@ def compute_advantage(returns, vs):
 
 
 @torch.inference_mode()
-def get_old_data(conf, NN_old: nn.Module, batch: TreeBatch, data: NodeData):
+def get_old_data(conf, NN_old: nn.Module, batch: TreeList, data: NodeData):
     NN_old.eval()
     # with torch.autocast("cuda"):
     old_logprob, old_qs, old_vs, entropy_old = [],[],[],[]
     for idx,b in enumerate(batch):
-        tree = TreeBatch([b])
-        tree.embeddings(NN_old, 1.0, [data.open_nodes[idx]])
-        o_lp, o_q, o_v, o_ent = tree.get_logprob(
-            [data.actions[idx]], [data.open_nodes[idx]])
+        tree = TreeList([b])
+        o_lp, o_v, o_ent = tree.get_log_action(NN_old,[data.open_nodes[idx]],[data.actions[idx]])
         old_logprob.append(o_lp)
-        old_qs.append(o_q)
         old_vs.append(o_v)
         entropy_old.append(o_ent)
     old_logprob = torch.cat(old_logprob)
-    old_qs = torch.cat(old_qs)
+    #old_qs = torch.cat(old_qs)
     old_vs = torch.cat(old_vs)
     entropy_old = torch.cat(entropy_old)
     adv = advantages_from_list(
         data.rewards, old_vs, data.mask, conf.env.decay, conf.optimization.gae)
-    batch.reset_caches()
+    #batch.reset_caches()
     NN_old.train()
     return old_logprob, old_qs, old_vs, entropy_old, adv
 
 
-def train_ppo(NN: nn.Module, optimizer: torch.optim.Optimizer, batch: TreeBatch, data: NodeData, old_logprob, old_vs, conf,  mb_advantages=None):
+def train_ppo(NN: nn.Module, optimizer: torch.optim.Optimizer, batch: TreeList, data: NodeData, old_logprob, old_vs, conf,  mb_advantages=None):
     data_size = len(batch)
     b_inds = np.arange(data_size)
     # with torch.autocast("cuda"):
-    batch.embeddings(NN, 1.0, data.open_nodes)
+    #batch.embeddings(NN, 1.0, data.open_nodes)
 
-    logprob, qs, vs, entropy = batch.get_logprob(data.actions, data.open_nodes)
+    logprob, vs, entropy = batch.get_log_action(NN,data.open_nodes,data.actions)
 
     logratio = logprob - old_logprob.detach()
     ratio = logratio.exp()
-    print("old_vs", old_vs.mean(), "vs", vs.mean(), "logratio",ratio.mean(), "±", ratio.std(), entropy.mean())
+    print("old_vs", old_vs.mean(), "vs", vs.mean(), "logratio",ratio.mean(), "±", ratio.std(), ratio.shape, logprob.shape)
 
 
 

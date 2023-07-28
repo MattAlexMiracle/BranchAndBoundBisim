@@ -54,7 +54,7 @@ def get_data(nodesel, model, baseline_gap=None, baseline_nodes=None):
         n_nodes = n/(baseline_nodes + 1e-8) -1
         gap = 1*gap + (1-1)*n_nodes
     
-    rewards[-1] = 10*(rewards[-1] - np.clip(gap,-2,2))
+    rewards[-1] = 10*(rewards[-1] - np.clip(gap,-1,1))
     returns = get_returns(rewards,0.99)
     selecteds = nodesel.paths
     return open_nodes, returns, nodes, rewards, selecteds

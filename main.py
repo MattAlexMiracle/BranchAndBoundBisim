@@ -4,6 +4,7 @@ if __name__ == '__main__':
 from ProblemCreators import subset_sum, make_tsp, create_knapsack_instance, capacitated_facility_location, cutting_stock
 import torch
 from Tree import BinaryNetworkTree, TreeBatch, to_dict, from_dict
+from TreeList import TreeList, Parent_Feature_Map
 from utils import get_data, plot_tree
 from SelectTree import CustomNodeSelector
 from pyscipopt import Model
@@ -55,7 +56,7 @@ def launch_models(cfg : DictConfig, pool,NN: nn.Module, csv_info : pd.DataFrame,
         last_n = no[-1]
         open_nodes.extend(op)
         returns.append(ret)
-        nodes.extend([from_dict(n) for n in no])
+        nodes.extend(no)
         rewards.append(r)
         if len(op) > 0:
             mask.extend([1 for _ in range(len(r)-1)] + [0.0])
@@ -110,14 +111,19 @@ def __make_and_optimize(it, seed, NN, f, baseline_gap=None,baseline_nodes=None):
 def eval_model(pool, model, data: pd.DataFrame):
     # NN_ref = ray.put(model)
     tmp = []
-    d=[]
-    args=[]
-    for i in range(len(data)):
-        datum = data.loc[i]
-        args.append((i,-1, model, datum["name"],datum["gap"],datum["open_nodes"]))
-    d = pool.starmap(__make_and_optimize,args)
-    for _, _, _, r, _, _ in d:
-        tmp.append(torch.tensor(r).sum().item())
+    ls = list(range(len(data)))
+    ls = [ls[x:x+8] for x in range(0, len(ls), 8)]
+    for l in ls:
+        args = []
+        for i in l:
+            print("RUNNING", i)
+            datum = data.loc[i]
+            args.append((i,-1, model, datum["name"],datum["gap"],datum["open_nodes"]))
+        d = pool.starmap(__make_and_optimize,args)
+        for t1, t2, t3, r, t4, t5 in d:
+            tmp.append(torch.tensor(r).sum().item())
+            del t1, t2, t3, t4, t5
+
     wandb.log({"eval reward mean": torch.tensor(tmp).mean(),"eval reward std": torch.tensor(tmp).std(), "eval reward median": np.median(np.array(tmp))})
 
 
@@ -154,7 +160,7 @@ def make_test_data(num, functions):
 
 def fit(cfg, NN,optim, open_nodes, returns, nodes, rewards, selecteds, mask):
     print("getting old model base")
-    batch = TreeBatch(nodes, device=cfg.device)
+    batch = TreeList(nodes)
     data = NodeData(open_nodes=open_nodes, returns=returns.to(cfg.device),
             nodes=batch, actions=selecteds, mask=mask, rewards=rewards)
     old_logprob, _, old_vs, _, adv = get_old_data(cfg, NN, batch, data)
@@ -165,7 +171,7 @@ def fit(cfg, NN,optim, open_nodes, returns, nodes, rewards, selecteds, mask):
         with torch.no_grad():
             idx = np.random.choice(len(nodes), size=min(
                 len(nodes), cfg.optimization.batchsize), replace=False)
-            batch = TreeBatch([nodes[i] for i in idx], device=cfg.device)
+            batch = TreeList([nodes[i] for i in idx])
             rs = torch.tensor([returns[i] for i in idx])
             act = [selecteds[i] for i in idx]
             o_batch = [open_nodes[i] for i in idx]

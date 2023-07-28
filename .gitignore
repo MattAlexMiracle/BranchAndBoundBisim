@@ -1,6 +1,6 @@
 outputs/
 wandb/
-__pycache__/*
+__pycache__/
 model-*.cip
 figs/
 eval_data/
@@ -8,3 +8,7 @@ training_data/
 training_data_bak/
 models/*
 tsplib_data/*
+*.csv
+*.so
+*.c
+*.o

@@ -9,7 +9,7 @@ optimization:
   gae: 0.9
 
 model:
-  features: 30
+  features: 20
   hidden_dim : 512
   depth: 2
 

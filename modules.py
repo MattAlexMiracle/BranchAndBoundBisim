@@ -47,6 +47,22 @@ def swiglu(x):
     x, gate = x.chunk(2, dim=-1)
     return F.silu(gate) * x
 
+@torch.jit.script
+def feature_transform(feat:torch.Tensor, n_sin:int, sigma: float=6):
+    repl = feat.repeat(n_sin,1,1)
+    freqs = 2*torch.pi* sigma ** (torch.arange(1,n_sin+1).unsqueeze(-1).unsqueeze(-1)/n_sin)
+    transformed_sin = torch.sin(repl * freqs).transpose(0,-1).reshape(feat.shape[0],-1)
+    transformed_cos = torch.cos(repl * freqs).transpose(0,-1).reshape(feat.shape[0],-1)
+    transformed = torch.cat([transformed_sin,transformed_cos],-1)
+    return transformed
+
+class Feature_Transform(nn.Module):
+    def __init__(self, n_sin,sigma) -> None:
+        super().__init__()
+        self.n_sin=n_sin
+        self.sigma=sigma
+    def forward(self,x):
+        return feature_transform(x,self.n_sin,self.sigma)
 
 class SlowNorm(nn.Module):
     def __init__(self,features,factor=0.05):
@@ -70,20 +86,18 @@ class FeatureEmbedder(nn.Module):
         self.embd = nn.Sequential(
             #nn.BatchNorm1d(feature_in,affine=False),
             SlowNorm(feature_in),
+            Feature_Transform(5,6),
             #WhitenTransform(feature_in),
-            nn.Linear(feature_in, feature_embed_out),
+            nn.Linear(feature_in*2*5, feature_embed_out),
             )
         layers = []
         
-        for i in range(n_layers):
-            layers.append(
-                nn.Sequential(
-                #nn.LayerNorm(feature_embed_out),
-                nn.Linear(feature_embed_out, feature_embed_out),
-                ))
-        self.layers = nn.ModuleList(layers)
+        #for i in range(n_layers):
+        #    layers.append(nn.Linear(feature_embed_out, feature_embed_out),
+        #        )
+        #self.layers = nn.ModuleList(layers)
         #self.weighters = nn.Parameter(torch.zeros(n_layers))
-        self.layernorm_out = nn.LayerNorm(feature_embed_out,elementwise_affine=False)
+        self.norm = nn.LayerNorm(feature_embed_out,elementwise_affine=False)
         self.scale = scale
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -94,8 +108,8 @@ class FeatureEmbedder(nn.Module):
         x = F.leaky_relu(self.embd(x))
         #for idx,m in enumerate(self.layers):
         #    x = F.leaky_relu(m(x)) + x
-        x = self.layernorm_out(x)*self.scale
-        return x
+        x = self.norm(x)
+        return x*self.scale
 
 def mapping(probs, steps):
     s = torch.softmax(probs, -1)
@@ -164,8 +178,9 @@ class CombineEmbedder(nn.Module):
         #                          )
         self.node_emb = nn.Sequential(
             #nn.LayerNorm(node_emb_sz,elementwise_affine=False),
-            nn.Linear(node_emb_sz,2*node_emb_sz),
-            SwiGLU(),
+            nn.Linear(node_emb_sz,node_emb_sz),
+            #SwiGLU(),
+            nn.LeakyReLU()
             )
         self.depth = depth
         self.scale_features = scale_features
