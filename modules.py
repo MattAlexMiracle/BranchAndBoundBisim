@@ -49,11 +49,15 @@ def swiglu(x):
 
 @torch.jit.script
 def feature_transform(feat:torch.Tensor, n_sin:int, sigma: float=6):
-    repl = feat.repeat(n_sin,1,1)
-    freqs = 2*torch.pi* sigma ** (torch.arange(1,n_sin+1).unsqueeze(-1).unsqueeze(-1)/n_sin)
-    transformed_sin = torch.sin(repl * freqs).transpose(0,-1).reshape(feat.shape[0],-1)
-    transformed_cos = torch.cos(repl * freqs).transpose(0,-1).reshape(feat.shape[0],-1)
-    transformed = torch.cat([transformed_sin,transformed_cos],-1)
+    transformed = torch.empty(feat.shape[0],2,n_sin,feat.shape[1])
+    for i in range(1,1+n_sin):
+        freqs = 2*torch.pi* sigma ** (i/n_sin)
+        transformed[:,0,i-1] = torch.sin(feat * freqs)
+        transformed[:,1,i-1] = torch.cos(feat * freqs)
+        #encs.append(transformed_sin)
+        #encs.append(transformed_cos)
+    #transformed = torch.cat(encs,-1)
+    transformed = transformed.reshape(feat.shape[0],-1)
     return transformed
 
 class Feature_Transform(nn.Module):

@@ -10,7 +10,7 @@ from typing import Dict, List, Any, Tuple
 import numpy as np
 import sys
 from TreeList import Parent_Feature_Map, TreeList, add_parent_map, prune_elements
-# from feature_extractor import get_model_info
+from feature_extractor import get_model_info
 
 def sample_open_nodes(nodes,logits :Dict[int,torch.Tensor]):
     ids : List[int] = [node.getNumber() for node in nodes]
@@ -51,7 +51,7 @@ def make_data(vars, slack_cons):
     return slack_hist, var_hist, frac_mean, already_integral
 
 
-def get_model_info(model,power=0.5):
+def get_model_info_old(model,power=0.5):
     NcutsApp = model.getNCutsApplied()
     Nsepa = model.getNSepaRounds()
     gap = model.getGap()
@@ -71,7 +71,7 @@ def get_model_info(model,power=0.5):
     #slack_cons = np.array(slack_cons)
     #t0 = time()
     slack_hist, var_hist, frac_mean, already_integral = make_data(vars, None)
-    cond = np.log10(model.getCondition())
+    #cond = np.log10(model.getCondition())
     lpi = model.lpiGetIterations()
     
     info = {
@@ -79,7 +79,7 @@ def get_model_info(model,power=0.5):
             "Nsepa":Nsepa,
             "gap": gap,
             "lpi": lpi,
-            "cond": cond,
+            #"cond": cond,
             "mean to integral": frac_mean,
             #"std to integral": frac_std,
             #"max to integral": frac_max,
@@ -114,8 +114,8 @@ class CustomNodeSelector(Nodesel):
         self.logit_lookup = torch.zeros(1)
         self.temperature = temperature
         self.step = 0
-        self.mods = num_in_range([(0,100), (100,1000)],[1,10])
-    
+        self.mods = num_in_range([(0,250), (250,1000)],[1,10])
+    @torch.no_grad()
     def get_tree(self, node, info : Dict[str, Any], var_hist: np.ndarray, slack_hist : np.ndarray,power=0.5):
         #t0 = time()
         self.added_ids.add(node.getNumber())
@@ -126,17 +126,21 @@ class CustomNodeSelector(Nodesel):
         depth = node.getDepth()/(self.model.getNNodes()+1)
         info["expDomch"] = expDomch
         info["depth_normed"] = depth
-        info["n_AddedConss"] = node.getNAddedConss()
+        #info["n_AddedConss"] = node.getNAddedConss()
+        normalizer = min(self.model.getPrimalbound(), self.model.getDualbound())
+        info["node lowerbound"] = node.getLowerbound()/normalizer
+        info["node estimate"] = node.getEstimate()/normalizer
+        #print(info)
 
         
-        features = torch.tensor(list(info.values())+ var_hist.tolist()).clamp(-10,10)#+slack_hist.tolist()).clamp(-10,10)
+        features = np.array(list(info.values())+ var_hist.tolist()).clip(-10,10)#+slack_hist.tolist()).clamp(-10,10)
         #print("info var slack",list(info.values()),var_hist.tolist(),slack_hist.tolist())
         #print("constructed features and node", time()-t0)
         if node.getNumber() != 1:
             pid = node.getParent().getNumber()
             #t0 = time()
             #add_node(self.tree, new_node, p) # type: ignore
-            self.tree = add_parent_map(self.tree, 0, node.getNumber(),pid, features.unsqueeze(0))
+            self.tree = add_parent_map(self.tree, 0, node.getNumber(),pid, features)
             """self.tree = Parent_Feature_Map(
                 uids=np.zeros((1,1)),
                 tree_ids=np.ones((1,1))*node.getNumber(),
@@ -148,7 +152,7 @@ class CustomNodeSelector(Nodesel):
                 uids=[0],
                 tree_ids=[node.getNumber()],
                 parent_ids=[-1],
-                features=[features.reshape(1,-1)],
+                features=[features],
             )
 
     @torch.inference_mode()

@@ -42,7 +42,7 @@ def main(checkpoint_file:str, problem_dir : str, cont_csv:bool):
         #model.hideOutput()
         model.optimize()
         baseline_gap = model.getGap()
-        base_nodes = model.getNNodes()
+        base_nodes = model.getNTotalNodes()
         del model
         ################################
         print(f"\n\n\n\n\n\nRUNNING THE CUSTOM {item}\n\n\n\n\n\n")
@@ -56,7 +56,7 @@ def main(checkpoint_file:str, problem_dir : str, cont_csv:bool):
         print("exited optimization")
 
         op, ret, no, r, select = get_data(nodesel, model, baseline_gap=baseline_gap,baseline_nodes=None)
-        df = df.append({"name": str(item), "normalized_gap": r.sum().item(), "gap": model.getGap(), "baseline gap":baseline_gap, "nnodes baseline":base_nodes, "nnodes bnbisim":model.getNNodes()},ignore_index=True)
+        df = df.append({"name": str(item), "normalized_gap": r.sum().item(), "gap": model.getGap(), "baseline gap":baseline_gap, "nnodes baseline":base_nodes, "nnodes bnbisim":model.getNTotalNodes()},ignore_index=True)
         del model
         df.to_csv('results.csv', index=False)
 

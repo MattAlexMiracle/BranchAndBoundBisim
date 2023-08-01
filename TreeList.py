@@ -5,13 +5,16 @@ from dataclasses import dataclass
 from typing import List, Tuple, Dict
 from time import time
 from numba import njit
+import networkx as nx
+import matplotlib.pyplot as plt
+
 
 @dataclass
 class Parent_Feature_Map:
     uids : List[int]
     tree_ids : List[int]
     parent_ids : List[int]
-    features: List[torch.Tensor]
+    features: List[np.ndarray]
 
     def tid_parents_uid_parents(self):
         ls = []
@@ -62,20 +65,19 @@ class TreeList:
 
     def get_prob(self,combineEmb:nn.Module, open_nodes: List[List[int]]):
         children, feats, uids = [], [], []
-        for t in self.trees:
-            c,f,u = get_embeddable(t)
-            children.extend(c)
-            feats.extend(f)
-            uids.extend(u)
-        #print(feats)
-        feats = torch.cat(feats).half()
-        uids = torch.LongTensor(uids)
-        children = torch.LongTensor(children)
+        with torch.no_grad():
+            for t in self.trees:
+                c,f,u = get_embeddable(t)
+                children.extend(c)
+                feats.extend(f)
+                uids.extend(u)
+            feats = torch.tensor(feats).half().detach()
+            uids = torch.LongTensor(uids).detach()
+            children = torch.LongTensor(children).detach()
         #print(feats.shape, children.shape, uids.shape)
         _,weights,values = combineEmb(feats, uids, children)
         pds, vds, entropy = [], [], []
-
-        for tree, o in zip(self.trees,open_nodes):
+        for tree, o in zip(self.trees,open_nodes):           
             w1, v1 = retrieve_valuables(tree.uids, uids.tolist(), weights, values)
             #print("w1",w1.shape)
             probdict, vdict = get_prob(tree, w1.squeeze(-1), v1.squeeze(-1), o)
@@ -100,9 +102,6 @@ class TreeList:
         return torch.stack(ps),vds,entropy
 
     def reset_caches(self):
-        for tree in self.trees:
-            for f in tree.features:
-                f.grad = None
         return 
 
 
@@ -110,6 +109,21 @@ class TreeList:
         return self.trees[idx]
     def __len__(self):
         return len(self.trees)
+
+
+
+def visualize_tree(tree:Parent_Feature_Map, filename: str = "tmp.png"):
+    tree_list = zip(tree.parent_ids, tree.tree_ids)
+    G = nx.DiGraph()
+
+    for parent_id, node_id in tree_list:
+        G.add_edge(parent_id, node_id)
+
+    pos = nx.kamada_kawai_layout(G, scale=3)
+
+    plt.figure(figsize=(100, 100))
+    nx.draw_networkx(G, pos, with_labels=True, node_size=300, node_color="lightblue", font_size=5)
+    plt.savefig(filename)
 
 torch.jit.script    
 def retrieve_valuables(uids_tree:List[int], batch_ids:List[int], weights:torch.Tensor, values:torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -133,7 +147,7 @@ def parents_to_children(parent_ids:List[int], node_ids:List[int]):
     return [v for v in child_list.values()]
 
 @torch.no_grad()
-def get_embeddable(tree) -> Tuple[List[List[List[int]]], List[torch.Tensor], List[int]]:
+def get_embeddable(tree: Parent_Feature_Map) -> Tuple[List[List[int]], List[np.ndarray], List[int]]:
     # 1. get uid
     ls = tree.uids
     # 2. get children

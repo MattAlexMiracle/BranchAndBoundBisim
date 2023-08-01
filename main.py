@@ -1,10 +1,10 @@
 import ray
 if __name__ == '__main__':
-    ray.init(object_store_memory=0.5*10**9)
+    ray.init()
 from ProblemCreators import subset_sum, make_tsp, create_knapsack_instance, capacitated_facility_location, cutting_stock
 import torch
 from Tree import BinaryNetworkTree, TreeBatch, to_dict, from_dict
-from TreeList import TreeList, Parent_Feature_Map
+from TreeList import TreeList, Parent_Feature_Map, visualize_tree
 from utils import get_data, plot_tree
 from SelectTree import CustomNodeSelector
 from pyscipopt import Model
@@ -28,7 +28,7 @@ import pandas as pd
 
 def launch_models(cfg : DictConfig, pool,NN: nn.Module, csv_info : pd.DataFrame, num_proc: int) -> Tuple[List[List[int]],
                                                                                                            torch.Tensor,
-                                                                                                           List[BinaryNetworkTree],
+                                                                                                           List[Parent_Feature_Map],
                                                                                                            List[float],
                                                                                                            List[List[int]],
                                                                                                            torch.Tensor]:
@@ -53,7 +53,6 @@ def launch_models(cfg : DictConfig, pool,NN: nn.Module, csv_info : pd.DataFrame,
     mask = []
     for csv_ind, res in zip(csv_indices,result):
         op, ret, no, r, select, gap = res
-        last_n = no[-1]
         open_nodes.extend(op)
         returns.append(ret)
         nodes.extend(no)
@@ -64,11 +63,11 @@ def launch_models(cfg : DictConfig, pool,NN: nn.Module, csv_info : pd.DataFrame,
         if gap < csv_info.at[csv_ind,"gap"]:
             print("updated",csv_ind, "from value", csv_info.at[csv_ind,"gap"], "to value", gap)
             csv_info.at[csv_ind,"gap"] = cfg.env.harden_gaps*gap  + (1-cfg.env.harden_gaps)*csv_info.at[csv_ind,"gap"]
+    del result
                 
     returns = torch.cat(returns)
     #pool.terminate()
     #pool.close()
-    rewards = rewards
     mask = torch.tensor(mask)
     # plot_tree(last_n, last_sel, f"figs/time-{int(time.time())}.png",sum(rewards[-1]))
     return open_nodes, returns, nodes, rewards, selecteds, mask
@@ -121,8 +120,8 @@ def eval_model(pool, model, data: pd.DataFrame):
             args.append((i,-1, model, datum["name"],datum["gap"],datum["open_nodes"]))
         d = pool.starmap(__make_and_optimize,args)
         for t1, t2, t3, r, t4, t5 in d:
-            tmp.append(torch.tensor(r).sum().item())
-            del t1, t2, t3, t4, t5
+            tmp.append(r.sum().item())
+        del d
 
     wandb.log({"eval reward mean": torch.tensor(tmp).mean(),"eval reward std": torch.tensor(tmp).std(), "eval reward median": np.median(np.array(tmp))})
 
@@ -186,7 +185,7 @@ def fit(cfg, NN,optim, open_nodes, returns, nodes, rewards, selecteds, mask):
         r.set_description(f"loss {loss}", True)
         if kldiv > 0.03:
             break
-    del open_nodes, returns, nodes, rewards, selecteds, mask, batch
+    del open_nodes, returns, nodes, rewards, selecteds, mask, batch, data, old_logprob, old_vs, adv
 
 def train(cfg: DictConfig, NN, optim):
     #torch.multiprocessing.set_start_method("spawn")
@@ -195,7 +194,6 @@ def train(cfg: DictConfig, NN, optim):
     df_eval = pd.read_csv("eval_data/info.csv")
     #total_rewards = []
     #eval_rewards = []
-    funs=[make_tsp, ]
     #test_data = make_test_data(32,funs)
     for it in range(cfg.env.num_steps):
         print("starting launch round",it)
@@ -210,6 +208,7 @@ def train(cfg: DictConfig, NN, optim):
             print("not enough steps!!!")
             continue
         fit(cfg, NN, optim, open_nodes, returns, nodes, rewards, selecteds, mask)
+        #visualize_tree(nodes[-1])
         if it % 25 == 0:
             torch.save({"weights": NN.state_dict(), "config": cfg}, f"models/model-{wandb.run.id}.pt")
             eval_model(pool,NN, df_eval)
