@@ -46,14 +46,15 @@ def get_data(nodesel, model, baseline_gap=None, baseline_nodes=None):
     ================================================
     """
     print(text)
-    if baseline_gap is not None:
+    """if baseline_gap is not None:
         #gap = gap /(baseline_gap*10 + gap+1e-8) - 0.5
         gap = gap / (10*baseline_gap+1e-8) - 1
     if baseline_nodes is not None:
         n = model.getNNodes()
         n_nodes = n/(baseline_nodes + 1e-8) -1
         gap = 1*gap + (1-1)*n_nodes
-    
+    """
+    gap = (baseline_gap-gap)/np.maximum(baseline_gap,gap)
     rewards[-1] = 10*(rewards[-1] - np.clip(gap,-1,1))
     returns = get_returns(rewards,0.99)
     selecteds = nodesel.paths
