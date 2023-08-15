@@ -11,23 +11,25 @@ def make_dataset(functions, number_of_instances, folder_name):
     for f in functions:
         buffer = []
         gap = []
-        for i in range(50):
+        for i in range(10):
             model = f()
             model.setRealParam("limits/time", 45)
             #model.setRealParam("limits/gap", 0.01)
             model.optimize()
-            if 0.0 < model.getGap()<50 and model.getNNodes()>50:
+            if 0.0 < model.getGap()<50 and model.getNNodes()>100:
                 buffer.append(model)
                 gap.append(model.getGap())
         for i in range(number_of_instances):
             accept = False
             for _ in range(15):
                 for _ in range(3):
+                    if len(buffer)>50:
+                        break
                     model = f()
                     model.setRealParam("limits/time", 45)
                     #model.setRealParam("limits/gap", 0.01)
                     model.optimize()
-                    if 0.0 < model.getGap()<50 and model.getNNodes()>50:
+                    if 0.0 < model.getGap()<50 and model.getNNodes()>100:
                         print("adding in model, the overall buffer size is now", len(buffer))
                         buffer.append(model)
                         gap.append(model.getGap())
@@ -40,7 +42,7 @@ def make_dataset(functions, number_of_instances, folder_name):
                 #if 10.00 < model.getGap():
                 #    print("gap too large, rerunning")
                 #    continue
-                if 0.0 < model.getGap() < 50.0 and model.getNNodes()>50:
+                if 0.0 < model.getGap() < 50.0 and model.getNNodes()>100:
                     d = {"gap":model.getGap(), "time" : 45, "type":f.__name__, "index":i, "name":f"{folder_name}/data/model-{f.__name__}-{i}.cip", "open_nodes":sum([len(x) for x in model.getOpenNodes()])}
                     data.append(d)
                     break

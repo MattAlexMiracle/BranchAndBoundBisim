@@ -56,8 +56,8 @@ def feature_transform(feat:torch.Tensor, n_sin:int, sigma: float=6):
         transformed[:,1,i-1] = torch.cos(feat * freqs)
         #encs.append(transformed_sin)
         #encs.append(transformed_cos)
-    #transformed = torch.cat(encs,-1)
     transformed = transformed.reshape(feat.shape[0],-1)
+    transformed = torch.cat([transformed,feat],-1)
     return transformed
 
 class Feature_Transform(nn.Module):
@@ -90,9 +90,13 @@ class FeatureEmbedder(nn.Module):
         self.embd = nn.Sequential(
             #nn.BatchNorm1d(feature_in,affine=False),
             SlowNorm(feature_in),
-            Feature_Transform(5,6),
+            #Feature_Transform(5,6),
             #WhitenTransform(feature_in),
-            nn.Linear(feature_in*2*5, feature_embed_out),
+            nn.Linear(feature_in,#*(2*5+1), 
+                      feature_embed_out),
+            nn.LeakyReLU(),
+            nn.Linear(feature_embed_out,#*(2*5+1), 
+                      feature_embed_out),
             )
         layers = []
         
@@ -207,6 +211,7 @@ class CombineEmbedder(nn.Module):
             nn.Linear(node_emb_sz,1, bias=False),
             #nn.Tanh()
         )
+        self.rezero_param = nn.Parameter(torch.zeros(1))
         t = np.geomspace(0.01,10.0,64)
         self.codebook = torch.from_numpy(np.concatenate([-t[::-1],t]))
         #torch.nn.init.normal_(self.weight.weight, 0,0.01)
@@ -245,7 +250,7 @@ class CombineEmbedder(nn.Module):
             #print("feats", feats.shape)
             feats = self.node_emb(feats)
             # print("feats",feats.shape, id_map.shape, inital_feat.shape)
-            new = sorted_feats[:-1] + feats*self.scale_steps
+            new = sorted_feats[:-1] + feats*self.scale_steps*self.rezero_param
             # we ignore the first entry since that is simply the "no neighbor" case
             sorted_feats[:-1] = new
         # undo the sorting and remove the synthetic "no neighbor" node

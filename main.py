@@ -92,8 +92,8 @@ def __make_and_optimize(it, seed, NN, f, baseline_gap=None,baseline_nodes=None):
     if not isinstance(f, str):
         model.writeProblem(f"cache/model-{it}.cip")
     with torch.inference_mode():
-        model.includeNodesel(nodesel, "custom test",
-                            "just a test", 1000000, 100000000)
+        model.includeNodesel(nodesel, "learnt_Nodeselector",
+                            "this is a reinforcement learnt tree-based node selector", 1000000, 100000000)
         model.setRealParam("limits/time", 45)
         model.hideOutput()
         model.optimize()
@@ -199,7 +199,7 @@ def train(cfg: DictConfig, NN, optim):
         print("starting launch round",it)
         NN.eval()
         open_nodes, returns, nodes, rewards, selecteds, mask = launch_models(cfg,
-            pool,NN, df, 8)
+            pool,NN, df, cfg.env.num_rollouts)
         r_tmp = [r.sum().item() for r in rewards]
         print(it,"rewards:", r_tmp,)
         rewards = torch.cat(rewards).detach()

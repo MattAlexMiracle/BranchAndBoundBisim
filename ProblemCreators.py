@@ -64,7 +64,7 @@ def make_tsp(seed=None, distances=None):
     # Define a distance matrix for the cities
     dist_matrix = distances
     if distances is None:
-        size = np.random.randint(75,200)
+        size = np.random.randint(75,125)
         d = do_mutation(powernorm(torch.randn(size,2,)*size,0.5).numpy())
         y = np.random.rand(size,size)
         random_offset = y-np.diag(y)*np.eye(len(y))

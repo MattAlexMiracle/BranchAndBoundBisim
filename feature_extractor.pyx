@@ -95,6 +95,22 @@ def get_model_info(model, double power=0.5):
     }
     return info, np.asarray(var_hist), None
     
+def get_node_features(model, node, info, double[:] var_hist):
+    cdef double depth = node.getDepth()/(model.getNNodes()+1)
+    cdef double normalizer = min(model.getPrimalbound(), model.getDualbound())
+    
+    #info["expDomch"] = expDomch
+    info["depth_normed"] = depth
+    #info["n_AddedConss"] = node.getNAddedConss()
+    info["node lowerbound"] = node.getLowerbound()/normalizer
+    info["node estimate"] = node.getEstimate()/normalizer
+    #print(info)
+
+    cdef double[:] vs = np.fromiter(info.values(),np.double)
+    cdef double[:] features = np.concatenate([vs, var_hist]).clip(-10,10)
+    return np.asarray(features)
+
+
 cdef get_discretization_errors(SCIP* model_scip, transformed=False):
     cdef SCIP_VAR** _vars
     cdef SCIP_VAR* _var

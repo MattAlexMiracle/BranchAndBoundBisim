@@ -10,7 +10,7 @@ from typing import Dict, List, Any, Tuple
 import numpy as np
 import sys
 from TreeList import Parent_Feature_Map, TreeList, add_parent_map, prune_elements
-from feature_extractor import get_model_info
+from feature_extractor import get_model_info, get_node_features
 
 def sample_open_nodes(nodes,logits :Dict[int,torch.Tensor]):
     ids : List[int] = [node.getNumber() for node in nodes]
@@ -119,21 +119,12 @@ class CustomNodeSelector(Nodesel):
     def get_tree(self, node, info : Dict[str, Any], var_hist: np.ndarray, slack_hist : np.ndarray,power=0.5):
         #t0 = time()
         self.added_ids.add(node.getNumber())
+        features = get_node_features(self.model, node, info, var_hist)
         #print("Node id", node.getNumber())
-        tmp =  node.getDomchg()
-        dmch = np.array([x.getNewBound() for x in tmp.getBoundchgs()] if tmp is not None else 0.0).astype(float)
-        expDomch = dmch.mean()
-        depth = node.getDepth()/(self.model.getNNodes()+1)
-        info["expDomch"] = expDomch
-        info["depth_normed"] = depth
-        #info["n_AddedConss"] = node.getNAddedConss()
-        normalizer = min(self.model.getPrimalbound(), self.model.getDualbound())
-        info["node lowerbound"] = node.getLowerbound()/normalizer
-        info["node estimate"] = node.getEstimate()/normalizer
-        #print(info)
+        #tmp =  node.getDomchg()
+        #dmch = np.array([x.getNewBound() for x in tmp.getBoundchgs()] if tmp is not None else 0.0).astype(float)
+        #expDomch = dmch.mean()
 
-        
-        features = np.array(list(info.values())+ var_hist.tolist()).clip(-10,10)#+slack_hist.tolist()).clamp(-10,10)
         #print("info var slack",list(info.values()),var_hist.tolist(),slack_hist.tolist())
         #print("constructed features and node", time()-t0)
         if node.getNumber() != 1:
@@ -159,6 +150,8 @@ class CustomNodeSelector(Nodesel):
     def nodeselect(self):
         self.step+=1
         if self.step>=750:
+            print("changing prio to disable fancy nodeselection")
+            self.model.setIntParam("nodeselection/learnt_Nodeselector/stdpriority",0)
             #t = self.model.getBestChild()
             #if t is not None:
                 # first try to work on the selected subtree

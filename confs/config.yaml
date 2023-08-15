@@ -9,7 +9,7 @@ optimization:
   gae: 0.9
 
 model:
-  features: 20
+  features: 19
   hidden_dim : 512
   depth: 2
 
@@ -17,3 +17,4 @@ env:
   num_steps: 50
   decay: 0.99
   harden_gaps: 0.0
+  num_rollouts: 8
