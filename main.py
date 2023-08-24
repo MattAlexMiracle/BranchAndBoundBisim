@@ -226,7 +226,7 @@ def main(cfg: DictConfig):
     print(cfg)
     wandb.init(project="BnBBisim", config=OmegaConf.to_container(cfg))
     device = cfg.device
-    NN = CombineEmbedder(cfg.model.features, cfg.model.hidden_dim,depth=cfg.model.depth)
+    NN = CombineEmbedder(cfg.model.features, cfg.model.hidden_dim,depth=cfg.model.depth,n_layers=cfg.model.n_layers)
     NN.to(device)
     optim = torch.optim.AdamW(NN.parameters(), cfg.optimization.lr)
     print(f"""

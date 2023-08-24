@@ -94,16 +94,19 @@ class FeatureEmbedder(nn.Module):
             #WhitenTransform(feature_in),
             nn.Linear(feature_in,#*(2*5+1), 
                       feature_embed_out),
-            nn.LeakyReLU(),
-            nn.Linear(feature_embed_out,#*(2*5+1), 
-                      feature_embed_out),
-            )
+
+             )
         layers = []
         
-        #for i in range(n_layers):
-        #    layers.append(nn.Linear(feature_embed_out, feature_embed_out),
-        #        )
-        #self.layers = nn.ModuleList(layers)
+        for i in range(n_layers):
+            layers.append(
+                nn.Sequential(
+                    nn.Linear(feature_embed_out,#*(2*5+1), 
+                            feature_embed_out),
+                    nn.LeakyReLU(),
+                    )
+                )
+        self.layers = nn.ModuleList(layers)
         #self.weighters = nn.Parameter(torch.zeros(n_layers))
         self.norm = nn.LayerNorm(feature_embed_out,elementwise_affine=False)
         self.scale = scale
@@ -114,8 +117,8 @@ class FeatureEmbedder(nn.Module):
         # we can't do this later in the combiner due to
         # the correlations between nodes
         x = F.leaky_relu(self.embd(x))
-        #for idx,m in enumerate(self.layers):
-        #    x = F.leaky_relu(m(x)) + x
+        for idx,m in enumerate(self.layers):
+            x = F.leaky_relu(m(x)) + x
         x = self.norm(x)
         return x*self.scale
 
@@ -176,7 +179,7 @@ def init_ortho(x : nn.Module):
 
 
 class CombineEmbedder(nn.Module):
-    def __init__(self,feat_emb_sz:int, node_emb_sz: int, scale_features = 0.5, depth = 2):
+    def __init__(self,feat_emb_sz:int, node_emb_sz: int, scale_features = 0.5, depth = 2,n_layers=1):
         super().__init__()
         self.node_emb_sz = node_emb_sz
         self.feat_emb_sz = feat_emb_sz
@@ -193,7 +196,7 @@ class CombineEmbedder(nn.Module):
         self.depth = depth
         self.scale_features = scale_features
         self.scale_steps = (1-scale_features)/self.depth
-        self.feat_emb = FeatureEmbedder(self.feat_emb_sz,node_emb_sz,scale=scale_features)
+        self.feat_emb = FeatureEmbedder(self.feat_emb_sz,node_emb_sz,scale=scale_features,n_layers=n_layers)
         self.weight = nn.Sequential(
             #nn.LayerNorm(node_emb_sz),
             #nn.Linear(node_emb_sz,node_emb_sz),
@@ -212,8 +215,6 @@ class CombineEmbedder(nn.Module):
             #nn.Tanh()
         )
         self.rezero_param = nn.Parameter(torch.zeros(1))
-        t = np.geomspace(0.01,10.0,64)
-        self.codebook = torch.from_numpy(np.concatenate([-t[::-1],t]))
         #torch.nn.init.normal_(self.weight.weight, 0,0.01)
         #torch.nn.init.constant_(self.weight.bias, 0)
         #self.node_emb.apply(init)

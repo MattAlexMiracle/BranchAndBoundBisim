@@ -38,7 +38,7 @@ def main(checkpoint_file: str, problem_dir: str, cont_csv: bool):
     cfg = dct["config"]
     params = dct["weights"]
     NN = CombineEmbedder(cfg.model.features,
-                         cfg.model.hidden_dim, depth=cfg.model.depth)
+                         cfg.model.hidden_dim, depth=cfg.model.depth,n_layers=cfg.model.n_layers)
     NN.load_state_dict(params)
     df = None
     if os.path.exists("results.csv") and cont_csv:
@@ -91,8 +91,8 @@ def main(checkpoint_file: str, problem_dir: str, cont_csv: bool):
 
     print(df)
     df = make_additional_metrics(df)
-    df["Nodes Base"] = pd.to_numeric(df["Nodes Base"].round(),downcast="integer")
-    df["Nodes Ours"] = pd.to_numeric(df["Nodes Ours"].round(),downcast="integer")
+    #df["Nodes Base"] = pd.to_numeric(df["Nodes Base"].round(),downcast="integer")
+    #df["Nodes Ours"] = pd.to_numeric(df["Nodes Ours"].round(),downcast="integer")
     df.to_csv('results.csv', index=False)
 
 

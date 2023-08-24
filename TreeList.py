@@ -71,7 +71,7 @@ class TreeList:
                 children.extend(c)
                 feats.extend(f)
                 uids.extend(u)
-            feats = torch.tensor(feats).half().detach()
+            feats = torch.tensor(np.stack(feats)).half().detach()
             uids = torch.LongTensor(uids).detach()
             children = torch.LongTensor(children).detach()
         #print(feats.shape, children.shape, uids.shape)
@@ -159,7 +159,7 @@ def get_embeddable(tree: Parent_Feature_Map) -> Tuple[List[List[int]], List[np.n
 @torch.jit.script
 def orient_padded_tensor(ids:torch.Tensor,ten:torch.Tensor):
     # first create a zero-padded tensor
-    tmp = torch.zeros(torch.max(ids).long()+1)
+    tmp = torch.zeros(torch.max(ids).long().item()+1)
     tmp[ids.long()] = ten
     return tmp
 

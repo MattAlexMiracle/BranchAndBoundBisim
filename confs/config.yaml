@@ -12,6 +12,7 @@ model:
   features: 19
   hidden_dim : 512
   depth: 2
+  n_layers: 1
 
 env:
   num_steps: 50

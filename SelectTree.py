@@ -114,7 +114,8 @@ class CustomNodeSelector(Nodesel):
         self.logit_lookup = torch.zeros(1)
         self.temperature = temperature
         self.step = 0
-        self.mods = num_in_range([(0,250), (250,1000)],[1,10])
+        i=250
+        self.mods = num_in_range([(0,i), (i,1000)],[1,10])
     @torch.no_grad()
     def get_tree(self, node, info : Dict[str, Any], var_hist: np.ndarray, slack_hist : np.ndarray,power=0.5):
         #t0 = time()

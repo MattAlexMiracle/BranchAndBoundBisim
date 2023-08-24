@@ -74,7 +74,7 @@ def get_old_data(conf, NN_old: nn.Module, batch: TreeList, data: NodeData):
     NN_old.train()
     return old_logprob, old_qs, old_vs, entropy_old, adv
 
-
+#@torch.compile
 def train_ppo(NN: nn.Module, optimizer: torch.optim.Optimizer, batch: TreeList, data: NodeData, old_logprob, old_vs, conf,  mb_advantages=None):
     data_size = len(batch)
     b_inds = np.arange(data_size)
