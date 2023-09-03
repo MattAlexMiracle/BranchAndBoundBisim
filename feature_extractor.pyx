@@ -97,7 +97,7 @@ def get_model_info(model, double power=0.5):
     
 def get_node_features(model, node, info, double[:] var_hist):
     cdef double depth = node.getDepth()/(model.getNNodes()+1)
-    cdef double normalizer = min(model.getPrimalbound(), model.getDualbound())
+    cdef double normalizer = min(model.getPrimalbound(), model.getDualbound())+1e-8
     
     #info["expDomch"] = expDomch
     info["depth_normed"] = depth

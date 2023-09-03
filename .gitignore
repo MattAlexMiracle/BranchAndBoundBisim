@@ -12,3 +12,8 @@ tsplib_data/*
 *.so
 *.c
 *.o
+*.lp
+*.mps
+*.tex
+*.pt
+*.zip

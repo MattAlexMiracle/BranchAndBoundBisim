@@ -16,7 +16,7 @@ def sample_open_nodes(nodes,logits :Dict[int,torch.Tensor]):
     ids : List[int] = [node.getNumber() for node in nodes]
     #print(ids)
     relevant_logits = sorted((k,v) for k,v in logits.items() if k in ids)
-    just_logits = torch.stack([x[1] for x in relevant_logits])
+    just_logits = torch.stack([x[1] for x in relevant_logits]).nan_to_num(0)
     sampled = torch.distributions.Categorical(logits=just_logits).sample()
     chosen, chosen_logit = relevant_logits[sampled]
     # print("chose node", chosen, "with log-likelihood", chosen_logit, "from", just_logits.exp().sum())

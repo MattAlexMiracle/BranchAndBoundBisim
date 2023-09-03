@@ -64,7 +64,7 @@ def make_tsp(seed=None, distances=None):
     # Define a distance matrix for the cities
     dist_matrix = distances
     if distances is None:
-        size = np.random.randint(75,125)
+        size = np.random.randint(75,90)
         d = do_mutation(powernorm(torch.randn(size,2,)*size,0.5).numpy())
         y = np.random.rand(size,size)
         random_offset = y-np.diag(y)*np.eye(len(y))
@@ -111,9 +111,9 @@ def create_knapsack_instance(seed=None):
     Returns a PySCIPOpt model object.
     """
     sz = 15_000
-    values = 10*torch.rand(sz).numpy()
-    weights = 10*torch.rand(sz,).numpy()
-    capacity = 10+(10*sz)*torch.rand(1).numpy()
+    values = torch.randint(1,1000,(sz,)).numpy()
+    weights = torch.randint(1,1000,(sz,)).numpy()
+    capacity = weights.sum()/10
     # Create a SCIP model
     model = scip.Model("Knapsack")
 
@@ -178,6 +178,11 @@ def subset_sum(seed=None):
     return model
 
 
+def read_lp(location: str):
+    model = Model()
+    model.readProblem(location)
+    return model
+
 def generate_production_planning_instance(seed=None):
     # Create PySCIPOpt model
     model = Model("production_planning")
@@ -219,18 +224,16 @@ def capacitated_facility_location(seed=None):
         - customer_demands: list of length num_customers containing the demand of each customer
         - facility_capacities: list of length num_facilities containing the capacity of each facility
         - customer_facility_costs: list of lists of length num_facilities, where customer_facility_costs[i][j] is the cost of satisfying the demand of customer i from facility j
-    Returns:
-        - obj_val: objective value of the optimal solution
-        - facility_open: list of length num_facilities containing binary values indicating whether each facility is open (1) or closed (0)
-        - customer_assign: list of lists of length num_customers, where customer_assign[i][j] is the amount of demand of customer i that is satisfied by facility j
     """
     print("locations")
-    num_facilities  = int(50)
-    num_customers  = int(10)
-    facility_costs = (torch.rand((num_facilities,))).numpy()*50+1
-    customer_demands = torch.rand((num_customers,)).numpy()+1
-    facility_capacities = 2*(torch.rand((num_facilities,))).numpy()+customer_demands.mean()
-    customer_facility_costs = torch.rand((num_customers, num_facilities)).numpy()+5
+    num_facilities  = int(100)
+    num_customers  = int(100)
+    facility_costs = 3000* torch.ones((num_facilities,)).numpy()
+    customer_demands = torch.ones((num_customers,)).numpy()
+    facility_capacities = 10_000_000*torch.ones((num_facilities,)).numpy()
+    customer_facility_costs = torch.ones((num_customers, num_facilities)).numpy()*3000
+    for c in range(num_customers):
+        customer_facility_costs[c, np.random.choice(num_facilities,size=10)] = np.random.randint(0,4,size=10)
     # Create a SCIP model
     model = scip.Model("Capacitated Facility Location")
 

@@ -1,4 +1,4 @@
-from ProblemCreators import make_tsplib
+from ProblemCreators import make_tsplib, read_lp
 from pathlib import Path
 import torch
 from modules import CombineEmbedder
@@ -54,10 +54,13 @@ def main(checkpoint_file: str, problem_dir: str, cont_csv: bool):
         if not start:
             print(str(item))
             continue
-        if "tour" in str(item) or not str(item).endswith("tsp"):
+        if "tour" in str(item) or not (str(item).endswith("tsp") or str(item).endswith("lp") or str(item).endswith("mps") ):
             continue
         print(f"\n\n\n\n\n\nRUNNING THE BASELINE {item}\n\n\n\n\n\n")
-        model = make_tsplib(str(item))
+        if str(item).endswith("tsp"):
+            model = make_tsplib(str(item))
+        else:
+            model = read_lp(str(item))
         if model is None:
             continue
         model.setRealParam("limits/time", 45)
@@ -73,7 +76,10 @@ def main(checkpoint_file: str, problem_dir: str, cont_csv: bool):
         del model
         ################################
         print(f"\n\n\n\n\n\nRUNNING THE CUSTOM {item}\n\n\n\n\n\n")
-        model = make_tsplib(str(item))
+        if str(item).endswith("tsp"):
+            model = make_tsplib(str(item))
+        else:
+            model = read_lp(str(item))
         nodesel = CustomNodeSelector(NN, "cpu", 1.0)
         model.includeNodesel(nodesel, "learnt_Nodeselector",
                              "this is a reinforcement learnt tree-based node selector", 1000000, 100000000)
