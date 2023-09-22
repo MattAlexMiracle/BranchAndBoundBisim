@@ -43,11 +43,6 @@ def launch_models(cfg : DictConfig, pool,NN: nn.Module, csv_info : pd.DataFrame,
         csv_indices.append(i)
         datum = csv_info.loc[i]
         arg_list.append((it,seed, NN, datum["name"],datum["gap"],datum["open_nodes"]))
-    #for it in range(num_proc//2):
-    #    seed = g.seed()
-    #    i = torch.randint(0, len(model_makers), (1,))
-    #    f = model_makers[i]
-    #    arg_list.append((it,seed, NN_ref, f))
     result = pool.starmap(__make_and_optimize,arg_list)
     open_nodes, returns, nodes, rewards, selecteds = [], [], [], [], [],
     mask = []

@@ -121,17 +121,8 @@ class CustomNodeSelector(Nodesel):
         #t0 = time()
         self.added_ids.add(node.getNumber())
         features = get_node_features(self.model, node, info, var_hist)
-        #print("Node id", node.getNumber())
-        #tmp =  node.getDomchg()
-        #dmch = np.array([x.getNewBound() for x in tmp.getBoundchgs()] if tmp is not None else 0.0).astype(float)
-        #expDomch = dmch.mean()
-
-        #print("info var slack",list(info.values()),var_hist.tolist(),slack_hist.tolist())
-        #print("constructed features and node", time()-t0)
         if node.getNumber() != 1:
             pid = node.getParent().getNumber()
-            #t0 = time()
-            #add_node(self.tree, new_node, p) # type: ignore
             self.tree = add_parent_map(self.tree, 0, node.getNumber(),pid, features)
             """self.tree = Parent_Feature_Map(
                 uids=np.zeros((1,1)),
@@ -153,11 +144,6 @@ class CustomNodeSelector(Nodesel):
         if self.step>=750:
             print("changing prio to disable fancy nodeselection")
             self.model.setIntParam("nodeselection/learnt_Nodeselector/stdpriority",0)
-            #t = self.model.getBestChild()
-            #if t is not None:
-                # first try to work on the selected subtree
-            #    return {"selnode":t}
-            # if the subtree is solved, continue with the best bound node
             return {"selnode":self.model.getBestboundNode()}
             
         #t=time()
@@ -196,10 +182,6 @@ class CustomNodeSelector(Nodesel):
         trees = TreeList([self.tree]) # type: ignore
         #self.comb_model.eval()
         pds, _, _ = trees.get_prob(self.comb_model,[open_node_ids])
-        # self.comb_model.train()
-        #print("Time taken", time()-t0,"newly added nodes",len(nodes))
-        #t0 = time()
-        #tmp, _ = get_prob(trees[0],open_node_ids)
         self.logit_lookup = pds[0] #{k:v.cpu() for k,v in tmp.items()}
         node = sample_open_nodes(open_nodes,self.logit_lookup)
         self.paths.append(node.getNumber()) # type: ignore
