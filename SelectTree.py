@@ -160,7 +160,7 @@ class CustomNodeSelector(Nodesel):
             # if the subtree is solved, continue with the best bound node
             return {"selnode":self.model.getBestboundNode()}
             
-        t=time()
+        #t=time()
         #t0=time()
         self.comb_model.eval()
         leaves, children, siblings = self.model.getOpenNodes()
@@ -210,7 +210,7 @@ class CustomNodeSelector(Nodesel):
         self.nodes.append(deepcopy(self.tree))
         # now cleanup the tree??
 
-        print("total time",time()-t)
+        #print("total time",time()-t)
         return {"selnode": node}
     
     def nodecomp(self, node1, node2):

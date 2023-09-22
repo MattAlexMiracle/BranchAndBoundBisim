@@ -43,6 +43,7 @@ def main(checkpoint_file: str, problem_dir: str, cont_csv: bool):
             nodesel, model, baseline_gap=row["gap"], baseline_nodes=None)
         df = df.append({"Name": row["name"], "Reward": r.sum().item(), "Gap Ours": model.getGap(
         ), "Gap Base": row["gap"], "Nodes Base": base_nodes, "Nodes Ours": model.getNTotalNodes()}, ignore_index=True)
+        df.to_csv('results.csv', index=False)
 
     print(df)
     df = make_additional_metrics(df)
