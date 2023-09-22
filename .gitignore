@@ -17,3 +17,5 @@ tsplib_data/*
 *.tex
 *.pt
 *.zip
+*.html
+*.png
